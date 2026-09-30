@@ -268,8 +268,8 @@ public partial class AutoDomainTask
                     var materials = await ReadEntryMaterials(candidate.Text, availableEntries: availableEntries);
                     if (materials.Count == 0) continue;
                     if (!_guidePlans.TryGetValue(key, out var plan)) _guidePlans[key] = plan = new(materials);
-                    else plan.Refresh(materials);
-                    var remaining = plan.RemainingResin(GuideReservePercent);
+                    else if (_taskParam.TrainingGuideRewardRecognitionEnabled) plan.Refresh(materials);
+                    var remaining = RemainingGuideResin(plan);
                     if (remaining == null) throw new InvalidOperationException($"{candidate.Text}：低级库存不完整，不能开始刷取");
                     ReportGuidePlan(candidate.Text, plan, remaining.Value);
                     if (remaining == 0) _guideCompletedLevels.Add(key);
@@ -464,7 +464,7 @@ public partial class AutoDomainTask
 
     private async Task<bool> UseTrainingGuideResin(Model.ResinStatus status)
     {
-        var remaining = _guideActivePlan?.RemainingResin(GuideReservePercent);
+        var remaining = _guideActivePlan == null ? null : RemainingGuideResin(_guideActivePlan);
         if (remaining == null || remaining <= 0)
             throw new InvalidOperationException("培养计划剩余需求无效，停止领取以避免错误消耗树脂");
 
@@ -525,14 +525,24 @@ public partial class AutoDomainTask
         finally { foreach (var text in texts) text.Dispose(); }
     }
 
+    private int? RemainingGuideResin(TrainingGuideFamilyPlan plan) =>
+        _taskParam.TrainingGuideRewardRecognitionEnabled
+            ? plan.RemainingResin(GuideReservePercent)
+            : plan.RemainingInitialResin(GuideReservePercent);
+
     private bool UpdateGuideAfterReward(bool resinExhausted)
     {
         if (!_guidePlanning || _guideActivePlan == null) return false;
         _guideRounds++;
-        var updated = _guideActivePlan.ApplyRewards(_guideRoundRewards, _guideRoundResin);
+        var useRewards = _taskParam.TrainingGuideRewardRecognitionEnabled;
+        if (!useRewards && _guideRoundResin <= 0)
+            throw new InvalidOperationException("培养计划：本轮树脂消耗未确认，无法扣减初始预算，停止任务");
+        var updated = _guideActivePlan.ApplyRewards(useRewards ? _guideRoundRewards : null, _guideRoundResin);
         if (_guideRoundResin == 0)
             Logger.LogWarning("培养计划：本轮树脂用量未确认，仅按材料更新库存，不计入每体掉落样本");
-        var remaining = updated ? _guideActivePlan.RemainingResin(GuideReservePercent) : null;
+        var remaining = !useRewards || updated ? RemainingGuideResin(_guideActivePlan) : null;
+        if (!useRewards)
+            Logger.LogInformation("培养计划：按初始预算执行，本轮消耗 {Spent}体，剩余预计 {Remaining}体", _guideRoundResin, remaining);
         if (remaining == 0 && _guideLevelKey != null) _guideCompletedLevels.Add(_guideLevelKey);
         if (remaining != null) ReportGuidePlan(_guideLevelKey ?? "当前关卡", _guideActivePlan, remaining.Value);
         else Logger.LogWarning("培养计划：奖励数据不完整，将退出并在入口重新读取库存");
