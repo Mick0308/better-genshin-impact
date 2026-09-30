@@ -194,7 +194,7 @@ public partial class AutoDomainTask
         }
     }
 
-    private async Task SelectPlannedGuideLevel(bool allOpen, bool scanOnly = false)
+    private async Task SelectPlannedGuideLevel(bool allOpen)
     {
         using (var screen = CaptureToRectArea())
             BetterGenshinImpact.Core.Script.Dependence.GlobalMethod.MoveMouseTo((int)(screen.Width * .25), (int)(screen.Height * .5));
@@ -219,27 +219,14 @@ public partial class AutoDomainTask
             foreach (var candidate in candidates)
             {
                 var key = _guideDomainName + ":" + TrainingGuideMaterialCatalog.Normalize(candidate.Text);
-                if (!scanOnly && _guideCompletedLevels.Contains(key)) continue;
-                if (!scanOnly && _guideCustomTargets != null)
+                if (_guideCompletedLevels.Contains(key)) continue;
+                if (_guideCustomTargets != null)
                 {
                     var entry = TrainingGuideEntryCatalog.Find(_guideDomainName ?? string.Empty, candidate.Text);
                     if (entry != null && !_guideCustomTargets.Keys.Any(m => m.Family == entry.Family && m.IsWeapon == entry.IsWeapon)) continue;
                 }
-                if (scanOnly && !ShouldScanGuideEntry(candidate.Text)) continue;
-                if (scanOnly) MarkGuideScanAttempt(TrainingGuideEntryCatalog.Find(_guideDomainName ?? string.Empty, candidate.Text));
                 candidate.Click();
                 await Delay(700, _ct);
-                if (scanOnly)
-                {
-                    try { await ReadEntryMaterials(candidate.Text, scanOnly: true); }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception e)
-                    {
-                        _guideScanEntryFailed++;
-                        RecordGuideScan($"{key}：入口扫描失败，{e.Message}");
-                    }
-                    continue;
-                }
                 if (_guideCustomTargets == null)
                 {
                     using var detail = CaptureToRectArea();
@@ -260,7 +247,6 @@ public partial class AutoDomainTask
                 if (remaining == 0) _guideCompletedLevels.Add(key);
                 else planned.Add((candidate, key));
             }
-            if (scanOnly) return;
             if (_guideCustomTargets != null)
             {
                 var requestedEntries = TrainingGuideEntryCatalog.Entries.Where(e => e.Domain == _guideDomainName &&
@@ -282,7 +268,7 @@ public partial class AutoDomainTask
         finally { foreach (var row in rows) row.Dispose(); }
     }
 
-    private async Task<List<TrainingGuideMaterialReading>> ReadEntryMaterials(string level, bool scanOnly = false,
+    private async Task<List<TrainingGuideMaterialReading>> ReadEntryMaterials(string level,
         ISet<TrainingGuideEntry>? availableEntries = null)
     {
         using var capture = CaptureToRectArea();
@@ -354,11 +340,9 @@ public partial class AutoDomainTask
         if (entry == null)
             throw new InvalidOperationException($"{level}: 图标家族不属于当前秘境，停止本入口识别");
         availableEntries?.Add(entry);
-        // 完整图标家族确认入口后再筛选，非目标入口不读取弹窗、不计入扫描成功数。
-        if (scanOnly && _guideScanEntries?.Contains(entry) != true) return materials;
-        if (!scanOnly && _guideCustomTargets != null &&
+        // 完整图标家族确认入口后再筛选，非目标入口不读取弹窗。
+        if (_guideCustomTargets != null &&
             !_guideCustomTargets.Keys.Any(m => m.Family == entry.Family && m.IsWeapon == entry.IsWeapon)) return materials;
-        if (scanOnly) MarkGuideScanAttempt(entry);
         foreach (var (icon, expected) in identified)
         {
             capture.ClickTo(band.X + icon.X + icon.Width / 2, band.Y + icon.Y + icon.Height / 2);
@@ -379,32 +363,14 @@ public partial class AutoDomainTask
             }
             if (reading == null)
             {
-                if (scanOnly)
-                {
-                    _guideScanFailed++;
-                    if (entry != null) _guideScanFailedMaterials.Add(expected);
-                    RecordGuideScan($"{_guideDomainName}/{level}：材料 {expected.Name} 数量识别失败");
-                    continue;
-                }
                 throw new InvalidOperationException("秘境材料库存识别失败，请查看培养浮窗OCR日志；停止以避免错误刷取");
             }
-            if (!scanOnly && _guideCustomTargets != null)
+            if (_guideCustomTargets != null)
             {
                 var required = _guideCustomTargets.GetValueOrDefault(reading.Material);
                 reading = reading with { Required = required, IsTarget = required > 0 };
             }
             materials.Add(reading);
-            if (scanOnly)
-            {
-                _guideScanSucceeded++;
-                if (entry != null) _guideScanReadMaterials.Add(reading.Material);
-                RecordGuideScan($"{_guideDomainName}/{level}：{reading.Material.Name} {reading.Stock}/{(reading.IsTarget ? reading.Required.ToString() : "-")}");
-            }
-        }
-        if (scanOnly)
-        {
-            if (entry != null && materials.Count == identified.Count) _guideScanCompletedEntries.Add(entry);
-            return materials;
         }
         if (!materials.Any(m => m.IsTarget))
             throw new InvalidOperationException("已确认需求角色，但未读到材料的培养需求数字，暂不能规划");
@@ -524,9 +490,6 @@ public partial class AutoDomainTask
         }
         finally { foreach (var text in texts) text.Dispose(); }
     }
-
-    private void SaveGuideRewardOcrImage(Mat image, string stage) =>
-        TrainingGuideDiagnostics.Save(image, Logger, $"reward-{stage}");
 
     private bool UpdateGuideAfterReward(bool resinExhausted)
     {
