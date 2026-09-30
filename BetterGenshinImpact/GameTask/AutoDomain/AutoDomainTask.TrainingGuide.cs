@@ -109,6 +109,12 @@ public partial class AutoDomainTask
         var foundAny = false;
         var domains = new List<string>();
         var seen = new HashSet<string>();
+        // 周本和圣遗物秘境可作为页面识别成功的证据，但不能进入材料培养规划。
+        var matcher = new TrainingGuideDomainMatcher(MapLazyAssets.Get().ScenesDic.Values
+            .SelectMany(scene => scene.Points)
+            .Where(point => point.Type is "BlessDomain" or "ForgeryDomain" or "MasteryDomain" or "TrounceDomain")
+            .Select(point => point.Name).OfType<string>().Where(name => !string.IsNullOrWhiteSpace(name)),
+            NormalizeGuideDomainName);
         for (var page = 0; page < 20; page++)
         {
             using var capture = CaptureToRectArea();
@@ -121,11 +127,12 @@ public partial class AutoDomainTask
                 signature = string.Join("|", rows.OrderBy(r => r.Y).Select(r => $"{NormalizeGuideDomainName(r.Text)}@{r.Y / 4}"));
                 foreach (var row in rows.OrderBy(r => r.Y))
                 {
-                    var text = NormalizeGuideDomainName(row.Text);
-                    var matches = MapLazyAssets.Get().DomainPositionMap.Keys.Where(n => text.Contains(NormalizeGuideDomainName(n))).ToArray();
-                    if (matches.Length != 1) continue;
+                    var match = matcher.Match(row.Text);
+                    if (match == null) continue;
                     foundAny = true;
-                    if (seen.Add(matches[0])) domains.Add(matches[0]);
+                    if (!seen.Add(match.Value.Name)) continue;
+                    if (match.Value.Supported) domains.Add(match.Value.Name);
+                    else Logger.LogInformation("培养计划：忽略不支持材料规划的目标 {Domain}", match.Value.Name);
                 }
             }
             finally { foreach (var row in rows) row.Dispose(); }
