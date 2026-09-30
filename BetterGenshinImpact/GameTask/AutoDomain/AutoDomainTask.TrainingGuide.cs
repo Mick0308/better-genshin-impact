@@ -22,6 +22,7 @@ public partial class AutoDomainTask
     private bool _guidePlanning;
     private bool _guideAdvance;
     private bool _guideReenter;
+    private bool _guideDemandRefreshUsed;
     private int _guideRounds;
     private int _guideRoundResin;
     private Model.ResinStatus? _guideResinStatus;
@@ -35,6 +36,7 @@ public partial class AutoDomainTask
     private readonly Dictionary<TrainingGuideMaterial, int>? _guideCustomTargets;
     private readonly HashSet<string> _guideUnavailableFamilies = new();
     private sealed class GuideDomainCompleteException : Exception { }
+    private sealed class GuideDemandUnconfirmedException : Exception { }
 
     private int GuideReservePercent => TrainingGuideRunCalculator.ResolveCraftingBonusReservePercent(
         _taskParam.TrainingGuideRunPreference, _taskParam.TrainingGuideCraftingBonusReservePercent);
@@ -61,6 +63,21 @@ public partial class AutoDomainTask
             }
             _guideAdvance = false;
             try { await DoDomain(); }
+            catch (GuideDemandUnconfirmedException)
+            {
+                if (_guideDemandRefreshUsed)
+                    throw new InvalidOperationException("刷新提升指南后仍无法确认秘境需求，停止任务，不进入备选秘境");
+                _guideDemandRefreshUsed = true;
+                Logger.LogWarning("培养计划：所有待处理入口均未确认需求，重新扫描提升指南后重试一次");
+                await new ReturnMainUiTask().Start(_ct);
+                _guideDomainCandidates = await ScanGuideDomains();
+                _guideCompletedDomains.Clear();
+                // 保留已由库存确认完成的关卡，其他入口根据新列表重新核对。
+                _guideDomainName = null;
+                _guideReenter = false;
+                _guideActivePlan = null;
+                continue;
+            }
             catch (GuideDomainCompleteException)
             {
                 _guideCompletedDomains.Add(_guideDomainName);
@@ -223,36 +240,46 @@ public partial class AutoDomainTask
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase).Value).Distinct().ToArray();
             if (tiers.Length != 1) throw new InvalidOperationException("底部候选难度不一致，列表可能未滚到底部");
             var planned = new List<(BetterGenshinImpact.GameTask.Model.Area.Region Region, string Key)>();
-            foreach (var candidate in candidates)
+            for (var demandPass = 0; demandPass < 2; demandPass++)
             {
-                var key = _guideDomainName + ":" + TrainingGuideMaterialCatalog.Normalize(candidate.Text);
-                if (_guideCompletedLevels.Contains(key)) continue;
-                if (_guideCustomTargets != null)
+                var unconfirmedDemand = false;
+                foreach (var candidate in candidates)
                 {
-                    var entry = TrainingGuideEntryCatalog.Find(_guideDomainName ?? string.Empty, candidate.Text);
-                    if (entry != null && !_guideCustomTargets.Keys.Any(m => m.Family == entry.Family && m.IsWeapon == entry.IsWeapon)) continue;
-                }
-                candidate.Click();
-                await Delay(700, _ct);
-                if (_guideCustomTargets == null)
-                {
-                    using var detail = CaptureToRectArea();
-                    using var demand = detail.Find(RecognitionObject.Ocr(detail.Width * .48, detail.Height * .49, detail.Width * .5, detail.Height * .33));
-                    if (!demand.Text.Contains("需求角色"))
+                    var key = _guideDomainName + ":" + TrainingGuideMaterialCatalog.Normalize(candidate.Text);
+                    if (_guideCompletedLevels.Contains(key)) continue;
+                    if (_guideCustomTargets != null)
                     {
-                        Logger.LogInformation("培养计划：{Level} 未出现需求角色，跳过", candidate.Text);
-                        continue;
+                        var entry = TrainingGuideEntryCatalog.Find(_guideDomainName ?? string.Empty, candidate.Text);
+                        if (entry != null && !_guideCustomTargets.Keys.Any(m => m.Family == entry.Family && m.IsWeapon == entry.IsWeapon)) continue;
                     }
+                    candidate.Click();
+                    await Delay(700, _ct);
+                    if (_guideCustomTargets == null)
+                    {
+                        using var detail = CaptureToRectArea();
+                        using var demand = detail.Find(RecognitionObject.Ocr(detail.Width * .48, detail.Height * .49, detail.Width * .5, detail.Height * .33));
+                        if (!demand.Text.Contains("需求角色"))
+                        {
+                            Logger.LogInformation("培养计划：{Level} 暂未识别到需求角色", candidate.Text);
+                            unconfirmedDemand = true;
+                            continue;
+                        }
+                    }
+                    var materials = await ReadEntryMaterials(candidate.Text, availableEntries: availableEntries);
+                    if (materials.Count == 0) continue;
+                    if (!_guidePlans.TryGetValue(key, out var plan)) _guidePlans[key] = plan = new(materials);
+                    else plan.Refresh(materials);
+                    var remaining = plan.RemainingResin(GuideReservePercent);
+                    if (remaining == null) throw new InvalidOperationException($"{candidate.Text}：低级库存不完整，不能开始刷取");
+                    ReportGuidePlan(candidate.Text, plan, remaining.Value);
+                    if (remaining == 0) _guideCompletedLevels.Add(key);
+                    else planned.Add((candidate, key));
                 }
-                var materials = await ReadEntryMaterials(candidate.Text, availableEntries: availableEntries);
-                if (materials.Count == 0) continue;
-                if (!_guidePlans.TryGetValue(key, out var plan)) _guidePlans[key] = plan = new(materials);
-                else plan.Refresh(materials);
-                var remaining = plan.RemainingResin(GuideReservePercent);
-                if (remaining == null) throw new InvalidOperationException($"{candidate.Text}：低级库存不完整，不能开始刷取");
-                ReportGuidePlan(candidate.Text, plan, remaining.Value);
-                if (remaining == 0) _guideCompletedLevels.Add(key);
-                else planned.Add((candidate, key));
+                // 正常路径不增加截图或等待；只有没有可执行目标且存在未确认入口时复查。
+                if (planned.Count > 0 || !unconfirmedDemand) break;
+                if (demandPass == 1) throw new GuideDemandUnconfirmedException();
+                Logger.LogWarning("培养计划：未确认任何待处理入口的需求，稍后重新截图复查");
+                await Delay(500, _ct);
             }
             if (_guideCustomTargets != null)
             {

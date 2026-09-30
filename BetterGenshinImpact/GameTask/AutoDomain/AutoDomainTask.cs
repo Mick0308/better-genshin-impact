@@ -188,6 +188,7 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
         _guideRounds = 0;
         _guideResinStatus = null;
         _guideReenter = false;
+        _guideDemandRefreshUsed = false;
         _guideDomainName = null;
         _guideActivePlan = null;
         _guideCompletedLevels.Clear();
