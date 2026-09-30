@@ -1644,9 +1644,10 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
 
             // 使用多页识别（自动检测是否需要翻页）
             Logger.LogInformation("自动秘境：开始奖励识别");
+            var useRewardsForPlanning = _guidePlanning && _taskParam.TrainingGuideRewardRecognitionEnabled;
             var rewards = RewardResultRecognizer.Instance.RecognizeMultiPage(
-                requireReliableCounts: _guidePlanning);
-            if (_guidePlanning && _taskParam.TrainingGuideRewardRecognitionEnabled)
+                requireReliableCounts: useRewardsForPlanning);
+            if (useRewardsForPlanning)
                 _guideRoundRewards = new Dictionary<string, int>(rewards);
 
             RewardResultRecognizer.MergeIntoSummary(_rewardSummary, rewards);
