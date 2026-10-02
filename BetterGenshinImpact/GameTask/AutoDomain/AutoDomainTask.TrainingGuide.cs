@@ -360,14 +360,7 @@ public partial class AutoDomainTask
                 }
                 _guideDomainsWithObservedDemand.Add(_guideDomainName!);
             }
-            List<TrainingGuideMaterialReading> materials;
-            try { materials = await ReadEntryMaterials(entry.Entry, difficulty, availableEntries); }
-            catch (InvalidOperationException)
-            {
-                Logger.LogWarning("培养计划：材料识别未确认，原地等待后复查一次");
-                await Delay(500, _ct);
-                materials = await ReadEntryMaterials(entry.Entry, difficulty, availableEntries);
-            }
+            var materials = await ReadEntryMaterials(entry, difficulty);
             if (materials.Count == 0) continue;
             if (!_guidePlans.TryGetValue(key, out var plan)) _guidePlans[key] = plan = new(materials, difficulty);
             else if (_taskParam.TrainingGuideRewardRecognitionEnabled) plan.Refresh(materials);
@@ -485,6 +478,7 @@ public partial class AutoDomainTask
         var layout = _guideEntryLayout ?? throw new InvalidOperationException("尚未建立入口分组");
         var targetIndex = layout.Index(entry, difficulty);
         var failedFrames = 0;
+        var missingTargetFrames = 0;
         var afterUpwardScroll = false;
         for (var page = 0; page < 80; page++)
         {
@@ -522,11 +516,14 @@ public partial class AutoDomainTask
                     // 可见范围内漏读时原地重试，不能通过滚动猜测难度。
                     if (y < screen.Height * .17) direction = 1;
                     else if (y > screen.Height * .92) direction = -1;
+                    else if (++missingTargetFrames >= 3)
+                        throw new InvalidOperationException($"{entry.Entry} 难度 {difficulty}：目标位置可见，但原地复查三次仍未确认可点击入口，停止查找");
                 }
             }
             finally { foreach (var row in rows) row.Dispose(); }
             if (direction != 0)
             {
+                missingTargetFrames = 0;
                 BetterGenshinImpact.Core.Script.Dependence.GlobalMethod.MoveMouseTo((int)(screen.Width * .25), (int)(screen.Height * .5));
                 var scrollCount = direction > 0 ? 5 : 1;
                 for (var step = 0; step < scrollCount; step++)
@@ -543,9 +540,9 @@ public partial class AutoDomainTask
         throw new InvalidOperationException($"未找到 {entry.Entry} 难度 {difficulty}，停止以避免选择其他材料家族");
     }
 
-    private async Task<List<TrainingGuideMaterialReading>> ReadEntryMaterials(string level, int difficulty,
-        ISet<TrainingGuideEntry>? availableEntries = null)
+    private async Task<List<TrainingGuideMaterialReading>> ReadEntryMaterials(TrainingGuideEntry entry, int difficulty)
     {
+        var level = entry.Entry;
         using var capture = CaptureToRectArea();
         var texts = capture.FindMulti(RecognitionObject.Ocr(capture.Width * .48, capture.Height * .35, capture.Width * .5, capture.Height * .4));
         Rect band;
@@ -588,7 +585,6 @@ public partial class AutoDomainTask
             throw new InvalidOperationException("秘境入口未识别到奖励图标，已停止点击。" + TrainingGuideDiagnostics.TroubleshootingHint);
         }
         var materials = new List<TrainingGuideMaterialReading>();
-        var entry = TrainingGuideEntryCatalog.Find(_guideDomainName ?? string.Empty, level);
         var identified = new List<(Rect Icon, TrainingGuideMaterial Material)>();
         // 整个入口共用模型会话，先确认材料所属家族，再打开任何材料弹窗。
         using (var recognizer = ItemIconRecognizerFactory.CreateConfigured())
@@ -645,7 +641,7 @@ public partial class AutoDomainTask
             identified.Select(x => x.Material.Tier).Distinct().Count() != identified.Count ||
             !tiersInOrder ||
             !tiersComplete ||
-            (entry != null && (family.Family != entry.Family || family.IsWeapon != entry.IsWeapon)))
+            (family.Family != entry.Family || family.IsWeapon != entry.IsWeapon))
         {
             TrainingGuideDiagnostics.Save(capture.SrcMat, "capture", recognitionId);
             TrainingGuideDiagnostics.Save(strip, "strip", recognitionId);
@@ -653,12 +649,6 @@ public partial class AutoDomainTask
                 $"入口={level}；难度={difficulty}；图标数量={icons.Count}；已识别={string.Join("、", identified.Select(x => x.Material.Name))}；横向等级={string.Join(",", tiersByPosition)}；预期等级={string.Join(",", expectedTiers)}；结果=家族不一致/等级缺失或顺序异常/与入口冲突");
             throw new InvalidOperationException($"{level}：图标识别未确认材料家族或等级顺序，停止本入口扫描");
         }
-        // 入口文字识别失败时，用已经确认的图标家族补全入口身份。
-        entry ??= TrainingGuideEntryCatalog.Entries.FirstOrDefault(e => e.Domain == _guideDomainName &&
-            e.Family == family.Family && e.IsWeapon == family.IsWeapon);
-        if (entry == null)
-            throw new InvalidOperationException($"{level}: 图标家族不属于当前秘境，停止本入口识别");
-        availableEntries?.Add(entry);
         // 图标家族确认入口后再筛选，非目标入口不读取弹窗。
         if (_guideCustomTargets != null &&
             !_guideCustomTargets.Keys.Any(m => m.Family == entry.Family && m.IsWeapon == entry.IsWeapon)) return materials;
