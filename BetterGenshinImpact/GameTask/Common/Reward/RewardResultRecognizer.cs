@@ -98,7 +98,7 @@ public class RewardResultRecognizer
             // 培养规划不能使用识别失败后猜测的数量，也不能忽略未识别名称的材料。
             if (requireReliableCounts && pageResult.Rewards.Any(r => string.IsNullOrEmpty(r.Name) ||
                 (!TrainingGuideRewardPolicy.IsCommonReward(r.Name) && r.Count <= 0)))
-                throw new InvalidOperationException("奖励数量或名称未可靠识别，本轮不更新培养库存，需回入口重新读取");
+                throw new InvalidOperationException("奖励数量或名称未可靠识别，本轮不更新培养库存");
             var currentPageRewards = ToRewardItems(pageResult.Rewards);
             // 同排同序名称表示翻页未移动。即使OCR数量波动，也不得当新奖励累加。
             if (previousPageRewards != null && currentPageRewards.Select(r => r.Name)

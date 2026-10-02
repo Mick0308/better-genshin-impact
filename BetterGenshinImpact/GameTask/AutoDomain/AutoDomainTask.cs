@@ -194,12 +194,11 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
         }
         _guideRounds = 0;
         _guideResinStatus = null;
-        _guideDemandRefreshUsed = false;
         _guideDomainsWithObservedDemand.Clear();
         _guideDomainName = null;
         _guideActivePlan = null;
-        _guideCompletedLevels.Clear();
-        _guideCompletedDomains.Clear();
+        _guideProcessedLevels.Clear();
+        _guideProcessedDomains.Clear();
         _guideUnavailableFamilies.Clear();
         _guideDomainCandidates = null;
         _guidePlans.Clear();
@@ -358,10 +357,8 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
             Logger.LogInformation("自动秘境：{Text}", "5. 领取奖励");
             if (!await GettingTreasure())
             {
-                if (_guidePlanning && _guideNextAction == GuideNextAction.RefreshInventory)
-                    Logger.LogInformation("培养计划：退出当前关卡，准备重读库存");
-                else if (_guidePlanning && _guideNextAction == GuideNextAction.AdvancePlan)
-                    Logger.LogInformation("培养计划：当前目标完成，退出后按缓存计划选择下一步");
+                if (_guidePlanning && _guideNextAction == GuideNextAction.AdvancePlan)
+                    Logger.LogInformation("培养计划：当前入口执行结束，退出后按缓存计划选择下一步");
                 else
                     Logger.LogInformation("体力耗尽或者设置轮次已达标，结束自动秘境");
                 break;
@@ -418,7 +415,7 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
 
     private async Task TpDomain()
     {
-        // 初次进入、切换秘境及出本后重读库存共用传送路径，不复用上一轮画面坐标。
+        // 初次进入及切换目标共用传送路径，不复用上一轮画面坐标。
         if (_guidePlanning) _guideEntryLayout = null;
         if (_taskParam.DomainName == TrainingGuideOption && !_guidePlanning)
         {

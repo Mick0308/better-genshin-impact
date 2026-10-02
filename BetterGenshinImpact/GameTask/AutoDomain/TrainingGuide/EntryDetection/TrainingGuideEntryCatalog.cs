@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -64,7 +64,7 @@ public static class TrainingGuideEntryCatalog
         new("荒坠的圣迹", "精通秘境：共观", "「荣光」", false),
     ]);
 
-    public static string NormalizeEntry(string text)
+    private static string NormalizeEntry(string text)
     {
         var normalized = TrainingGuideMaterialCatalog.Normalize(text).Replace(':', '：')
             .Replace("沉砂之渊", "沉沙之渊");

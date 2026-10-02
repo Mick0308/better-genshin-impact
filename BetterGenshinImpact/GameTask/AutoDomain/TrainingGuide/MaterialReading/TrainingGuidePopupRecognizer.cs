@@ -12,7 +12,7 @@ using static BetterGenshinImpact.GameTask.Common.TaskControl;
 namespace BetterGenshinImpact.GameTask.AutoDomain.TrainingGuide;
 
 /// <summary>浮窗局部 OCR。每种预处理方式连续读两帧，关键数字一致才接受。</summary>
-public sealed class TrainingGuidePopupRecognizer(ILogger logger, CancellationToken ct, bool debugEnabled = false)
+public sealed class TrainingGuidePopupRecognizer(ILogger logger, CancellationToken ct)
 {
     public async Task<TrainingGuideMaterialReading?> ReadStable(TrainingGuideMaterial expectedMaterial,
         TrainingGuideEntry? entry = null)
@@ -23,7 +23,7 @@ public sealed class TrainingGuidePopupRecognizer(ILogger logger, CancellationTok
         var parsedCount = 0;
         var hadIssue = false;
         var captureId = $"popup-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}";
-        var debugId = debugEnabled && TrainingGuideDiagnostics.Enabled ? captureId : null;
+        var debugId = TrainingGuideDiagnostics.Enabled ? captureId : null;
         for (var attempt = 0; attempt < 6; attempt++)
         {
             ct.ThrowIfCancellationRequested();
@@ -61,7 +61,7 @@ public sealed class TrainingGuidePopupRecognizer(ILogger logger, CancellationTok
         return null;
     }
 
-    public static bool SameNumbers(TrainingGuideMaterialReading current, TrainingGuideMaterialReading? previous) =>
+    private static bool SameNumbers(TrainingGuideMaterialReading current, TrainingGuideMaterialReading? previous) =>
         previous != null && current.Material == previous.Material && current.Stock == previous.Stock &&
         current.Required == previous.Required && current.IsTarget == previous.IsTarget;
 

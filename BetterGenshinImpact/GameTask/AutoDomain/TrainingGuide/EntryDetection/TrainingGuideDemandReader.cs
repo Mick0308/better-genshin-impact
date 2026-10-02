@@ -12,7 +12,7 @@ namespace BetterGenshinImpact.GameTask.AutoDomain.TrainingGuide;
 /// <summary>选中入口确认后采集两帧；OCR 串行，第一帧识别与第二帧采集重叠。</summary>
 internal static class TrainingGuideDemandReader
 {
-    public static async Task<bool> ReadAsync(string entry, ILogger logger, bool debug, CancellationToken ct)
+    public static async Task<bool> ReadAsync(string entry, ILogger logger, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         var id = $"demand-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{Guid.NewGuid():N}";
@@ -37,7 +37,7 @@ internal static class TrainingGuideDemandReader
             var found = HasDemand(firstResult.Text) || HasDemand(secondResult.Text);
             TrainingGuideDiagnostics.LogEntryVerification(id,
                 $"需求双帧；入口={entry}；A采集={firstAt:O}；B采集={secondAt:O}；采集间隔={(secondAt - firstAt).TotalMilliseconds:F0}ms；B采集完成={secondAfterMs:F0}ms；A识别耗时={firstResult.Milliseconds:F0}ms；B识别耗时={secondResult.Milliseconds:F0}ms；总耗时={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0}ms；A原文=[{firstResult.Text}]；B原文=[{secondResult.Text}]；需求存在={found}");
-            if (debug)
+            if (TrainingGuideDiagnostics.Enabled)
             {
                 TrainingGuideDiagnostics.Save(first, "frame-a", id);
                 TrainingGuideDiagnostics.Save(second, "frame-b", id);
@@ -68,5 +68,5 @@ internal static class TrainingGuideDemandReader
         return (text, Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 
-    internal static bool HasDemand(string text) => TrainingGuideMaterialCatalog.Normalize(text).Contains("需求角色");
+    private static bool HasDemand(string text) => TrainingGuideMaterialCatalog.Normalize(text).Contains("需求角色");
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -32,7 +32,7 @@ public static class TrainingGuideResinEstimator
         }
         var calculationLevels = levels.Select((level, tier) => new TrainingGuideMaterialLevel(
             level.Material.Name, level.Stock, level.Required, drops[tier] * resinPerClaim / 20m)).ToArray();
-        var result = TrainingGuideRunCalculator.FindMinimumRuns(calculationLevels, reservePercent);
-        return result == null ? null : checked(result.Runs * resinPerClaim);
+        var runs = TrainingGuideRunCalculator.FindMinimumRuns(calculationLevels, reservePercent);
+        return runs is int count ? checked(count * resinPerClaim) : null;
     }
 }

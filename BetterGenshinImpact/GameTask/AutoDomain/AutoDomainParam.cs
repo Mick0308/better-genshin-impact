@@ -89,6 +89,8 @@ public class AutoDomainParam : BaseTaskParam<AutoDomainTask>
     /// <summary>Use recognized rewards to update the remaining training plan.</summary>
     public bool TrainingGuideRewardRecognitionEnabled { get; set; }
 
+    public bool TrainingGuideRewardFailureBudgetEnabled { get; set; }
+
     public bool TrainingGuideDiagnosticsEnabled { get; set; }
 
     /// <summary>Fallback domain after training targets are complete. Empty disables fallback.</summary>
@@ -135,6 +137,7 @@ public class AutoDomainParam : BaseTaskParam<AutoDomainTask>
         TrainingGuideRunPreference = config.DevelopmentGuideRunPreference;
         TrainingGuideCraftingBonusReservePercent = config.DevelopmentGuideCraftingBonusReservePercent;
         TrainingGuideRewardRecognitionEnabled = config.DevelopmentGuideRewardRecognitionEnabled;
+        TrainingGuideRewardFailureBudgetEnabled = config.TrainingGuideRewardFailureBudgetEnabled;
         TrainingGuideDiagnosticsEnabled = config.TrainingGuideDiagnosticsEnabled;
         TrainingGuideFallbackDomainName = config.DevelopmentGuideFallbackDomainName;
         TrainingGuideFallbackSundaySelectedValue = config.DevelopmentGuideFallbackSundaySelectedValue;

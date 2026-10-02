@@ -9,6 +9,7 @@ public sealed class TrainingGuideFamilyPlan
 {
     public List<TrainingGuideMaterialReading> Materials { get; private set; }
     public int KnownResinSpent { get; private set; }
+    public bool HasMissingRewards { get; private set; }
     private readonly Dictionary<string, long> _observedDrops = new();
     private int _observedResinSpent;
     private int? _initialResinBudget;
@@ -20,7 +21,19 @@ public sealed class TrainingGuideFamilyPlan
         TrainingGuideDropExpectations.Per20(Materials[0].Material.IsWeapon, difficulty);
         Difficulty = difficulty;
     }
-    public void Refresh(IEnumerable<TrainingGuideMaterialReading> materials) => Materials = materials.ToList();
+    public void Refresh(IEnumerable<TrainingGuideMaterialReading> materials)
+    {
+        Materials = materials.ToList();
+        HasMissingRewards = false;
+    }
+
+    public void MarkRewardsMissing() => HasMissingRewards = true;
+
+    public void RecordResinSpent(int resin)
+    {
+        if (resin <= 0) throw new ArgumentOutOfRangeException(nameof(resin));
+        KnownResinSpent = checked(KnownResinSpent + resin);
+    }
 
     /// <summary>不使用奖励更新库存时，按首次估算的预算扣除实际消耗。</summary>
     public int? RemainingInitialResin(int reservePercent)
@@ -31,10 +44,10 @@ public sealed class TrainingGuideFamilyPlan
 
     public bool ApplyRewards(IReadOnlyDictionary<string, int>? rewards, int resin)
     {
-        if (resin > 0) KnownResinSpent = checked(KnownResinSpent + resin);
+        RecordResinSpent(resin);
         if (rewards == null || rewards.Count == 0 || rewards.Any(r => r.Value <= 0)) return false;
         var family = Materials[0].Material.Family;
-        // 未知名称或其他家族的材料不能混入当前家族；回到入口读取真实库存。
+        // 未知名称或其他家族的材料不能混入当前家族；调用方切换预算模式。
         foreach (var name in rewards.Keys)
         {
             var material = TrainingGuideMaterialCatalog.Find(name);
