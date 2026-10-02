@@ -12,7 +12,14 @@ public sealed class TrainingGuideFamilyPlan
     private readonly Dictionary<string, long> _observedDrops = new();
     private int _observedResinSpent;
     private int? _initialResinBudget;
-    public TrainingGuideFamilyPlan(IEnumerable<TrainingGuideMaterialReading> materials) => Materials = materials.ToList();
+    public int Difficulty { get; }
+    public TrainingGuideFamilyPlan(IEnumerable<TrainingGuideMaterialReading> materials, int difficulty = 4)
+    {
+        Materials = materials.ToList();
+        // 不同难度使用独立计划，不能混用掉落样本和初始预算。
+        TrainingGuideDropExpectations.Per20(Materials[0].Material.IsWeapon, difficulty);
+        Difficulty = difficulty;
+    }
     public void Refresh(IEnumerable<TrainingGuideMaterialReading> materials) => Materials = materials.ToList();
 
     /// <summary>不使用奖励更新库存时，按首次估算的预算扣除实际消耗。</summary>
@@ -42,7 +49,7 @@ public sealed class TrainingGuideFamilyPlan
             var index = Materials.FindIndex(m => m.Material == drop.Material);
             if (index >= 0)
                 Materials[index] = Materials[index] with { Stock = checked(Materials[index].Stock + drop.Count) };
-            if (resin > 0)
+            if (resin > 0 && index >= 0)
                 _observedDrops[drop.Material!.Name] = checked(_observedDrops.GetValueOrDefault(drop.Material.Name) + drop.Count);
         }
         if (resin > 0) _observedResinSpent = checked(_observedResinSpent + resin);
@@ -51,10 +58,10 @@ public sealed class TrainingGuideFamilyPlan
 
     public int? RemainingResin(int reservePercent)
     {
-        var expected = TrainingGuideDropExpectations.Per20(Materials[0].Material.IsWeapon);
+        var expected = TrainingGuideDropExpectations.Per20(Materials[0].Material.IsWeapon, Difficulty);
         // 保留一份20体先验，避免少量样本暂未掉落高级材料时把其期望直接置零。
         if (_observedResinSpent > 0)
-            foreach (var item in TrainingGuideMaterialCatalog.Materials.Where(m => m.Family == Materials[0].Material.Family))
+            foreach (var item in Materials.Select(m => m.Material))
                 expected[item.Tier] = (expected[item.Tier] + _observedDrops.GetValueOrDefault(item.Name)) * 20m / (_observedResinSpent + 20m);
         return TrainingGuideResinEstimator.Estimate(Materials, reservePercent, 20, expected);
     }

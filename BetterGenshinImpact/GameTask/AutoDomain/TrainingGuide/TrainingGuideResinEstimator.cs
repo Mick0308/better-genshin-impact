@@ -4,7 +4,7 @@ using System.Linq;
 
 namespace BetterGenshinImpact.GameTask.AutoDomain.TrainingGuide;
 
-/// <summary>用户提供的最高难度期望掉落，每 20 体。使用 decimal，不能先把每次小数掉落取整。</summary>
+/// <summary>按入口实际读取的材料估算树脂；可传入该难度的每20体期望，不推算未读取的高级需求。</summary>
 public static class TrainingGuideResinEstimator
 {
     public static int? Estimate(IReadOnlyList<TrainingGuideMaterialReading> readings, int reservePercent,

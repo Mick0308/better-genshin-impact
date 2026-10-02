@@ -53,7 +53,7 @@ public static class TrainingGuideEntryCatalog
         new("苍白的遗荣", "精通秘境：旋韵", "「公平」", false),
         new("苍白的遗荣", "精通秘境：箴铭", "「正义」", false),
         new("苍白的遗荣", "精通秘境：琅诵", "「秩序」", false),
-        new("蕴火的幽墟", "精通秘境：转竟", "「角逐」", false),
+        new("蕴火的幽墟", "精通秘境：转竞", "「角逐」", false),
         new("蕴火的幽墟", "精通秘境：空华", "「焚燔」", false),
         new("蕴火的幽墟", "精通秘境：旋复", "「纷争」", false),
         new("无光的深都", "精通秘境：墟都", "「月光」", false),
@@ -72,9 +72,25 @@ public static class TrainingGuideEntryCatalog
         return Regex.Replace(normalized, @"[IVXⅠⅡⅢⅣⅤⅥ]+$", "", RegexOptions.IgnoreCase);
     }
 
-    public static TrainingGuideEntry? Find(string domain, string entry) =>
-        Entries.SingleOrDefault(e =>
-            TrainingGuideMaterialCatalog.Normalize(e.Domain) == TrainingGuideMaterialCatalog.Normalize(domain) &&
-            NormalizeEntry(e.Entry) == NormalizeEntry(entry));
+    // 仅收录实际日志出现的完整入口别名，并限定秘境；不做单字替换或子串匹配。
+    // 2026-09-28 两次遍历均记录这些名称，并成功读取对应家族材料。
+    private static readonly IReadOnlyDictionary<(string Domain, string Entry), string> OcrCorrections =
+        new Dictionary<(string Domain, string Entry), string>
+        {
+            [("菫色之庭", "精通秘境：董染之国")] = "精通秘境：菫染之国",
+            [("苍白的遗荣", "精通秘境：铭")] = "精通秘境：箴铭",
+            [("蕴火的幽墟", "精通秘境：转竟")] = "精通秘境：转竞",
+        };
+
+    public static TrainingGuideEntry? Find(string domain, string entry)
+    {
+        var normalizedDomain = TrainingGuideMaterialCatalog.Normalize(domain);
+        var normalizedEntry = NormalizeEntry(entry);
+        if (OcrCorrections.TryGetValue((normalizedDomain, normalizedEntry), out var corrected))
+            normalizedEntry = corrected;
+        return Entries.SingleOrDefault(e =>
+            TrainingGuideMaterialCatalog.Normalize(e.Domain) == normalizedDomain &&
+            NormalizeEntry(e.Entry) == normalizedEntry);
+    }
 }
 
