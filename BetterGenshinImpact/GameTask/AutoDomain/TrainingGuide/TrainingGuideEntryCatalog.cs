@@ -53,7 +53,7 @@ public static class TrainingGuideEntryCatalog
         new("苍白的遗荣", "精通秘境：旋韵", "「公平」", false),
         new("苍白的遗荣", "精通秘境：箴铭", "「正义」", false),
         new("苍白的遗荣", "精通秘境：琅诵", "「秩序」", false),
-        new("蕴火的幽墟", "精通秘境：转竞", "「角逐」", false),
+        new("蕴火的幽墟", "精通秘境：转竟", "「角逐」", false),
         new("蕴火的幽墟", "精通秘境：空华", "「焚燔」", false),
         new("蕴火的幽墟", "精通秘境：旋复", "「纷争」", false),
         new("无光的深都", "精通秘境：墟都", "「月光」", false),
@@ -79,7 +79,7 @@ public static class TrainingGuideEntryCatalog
         {
             [("菫色之庭", "精通秘境：董染之国")] = "精通秘境：菫染之国",
             [("苍白的遗荣", "精通秘境：铭")] = "精通秘境：箴铭",
-            [("蕴火的幽墟", "精通秘境：转竟")] = "精通秘境：转竞",
+            [("蕴火的幽墟", "精通秘境：转竞")] = "精通秘境：转竟",
         };
 
     public static TrainingGuideEntry? Find(string domain, string entry)
