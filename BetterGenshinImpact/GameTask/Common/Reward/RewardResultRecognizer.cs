@@ -135,7 +135,9 @@ public class RewardResultRecognizer
             if (newRewards.Count > 0)
             {
                 allRewards.AddRange(requireReliableCounts
-                    ? newRewards.Where(r => !TrainingGuideRewardPolicy.IsCommonReward(r.Name)) : newRewards);
+                    ? newRewards.Where(r => !TrainingGuideRewardPolicy.IsCommonReward(r.Name) ||
+                        pageResult.Rewards.Any(p => p.Name == r.Name && p.Count > 0))
+                    : newRewards);
             }
 
             if (duplicateCount > 0)

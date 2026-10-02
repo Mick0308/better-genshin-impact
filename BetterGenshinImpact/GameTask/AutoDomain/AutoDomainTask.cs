@@ -429,7 +429,7 @@ public partial class AutoDomainTask : ISoloTask<Dictionary<string, int>>
                 Logger.LogInformation("自动秘境：传送到秘境{Text}", _guideDomainName ?? _taskParam.DomainName);
                 await new TpTask(_ct).Tp(domainPosition.X, domainPosition.Y);
                 await Delay(1000, _ct);
-                if (!await Bv.WaitForMainUi(_ct))
+                if (!await Bv.WaitForMainUi(_ct) && _guidePlanning)
                     throw new InvalidOperationException("传送后未确认回到主界面，停止接近秘境入口");
 
                 await ApproachDomainEntrance(_guideDomainName ?? _taskParam.DomainName);
