@@ -18,6 +18,9 @@ using BetterGenshinImpact.GameTask.SoloTask;
 using BetterGenshinImpact.GameTask.SoloTask.Execution;
 using BetterGenshinImpact.GameTask.AutoSkip.Audio;
 using BetterGenshinImpact.GameTask.Music.Service;
+using BetterGenshinImpact.GameTask.QuestVoice;
+using BetterGenshinImpact.GameTask.QuestVoice.Features.Diagnostics;
+using BetterGenshinImpact.ViewModel.Pages.QuestVoiceSettings;
 using BetterGenshinImpact.GameTask.Runtime;
 using BetterGenshinImpact.GameTask.Runtime.Win32;
 using BetterGenshinImpact.GameTask.Runtime.WebPage;
@@ -38,6 +41,7 @@ using BetterGenshinImpact.Service.AccountRecords;
 using BetterGenshinImpact.Service.ChildSession;
 using BetterGenshinImpact.Service.ExternalAccess;
 using BetterGenshinImpact.Service.ExternalAccess.Logging;
+using BetterGenshinImpact.Service.Guide;
 using BetterGenshinImpact.Service.Instance;
 using BetterGenshinImpact.Service.I18n;
 using BetterGenshinImpact.Service.Interface;
@@ -125,6 +129,8 @@ public partial class App : Application
 
                 var loggerConfiguration = new LoggerConfiguration()
                     .WriteTo.Logger(fileLoggerConfiguration => fileLoggerConfiguration
+                        // 原始诊断独立留档；不再在文件额外复制仅供悬浮显示的OCR摘要。
+                        .Filter.ByExcluding(QuestVoiceLog.IsSummary)
                         .Enrich.WithProperty("BgiInstance", instanceIdentity)
                         .WriteTo.File(logFile,
                             outputTemplate:
@@ -146,8 +152,8 @@ public partial class App : Application
                 loggerConfiguration.WriteTo.Sink(
                     new ConditionalLogEventSink(
                         new LoggerConfiguration()
-                            .WriteTo.RichTextBox(richTextBox, LogEventLevel.Information,
-                                "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+                            .Filter.ByIncludingOnly(QuestVoiceLog.IsOverlayVisible)
+                            .WriteTo.Sink(new BoundedRichTextBoxSink(richTextBox), LogEventLevel.Information)
                             .CreateLogger(),
                         () => all.MaskWindowConfig is { MaskEnabled: true, ShowLogBox: true }),
                     LogEventLevel.Information);
@@ -288,11 +294,22 @@ public partial class App : Application
                 services.AddSingleton<IStorageAreaProvider>(sp => sp.GetRequiredService<InventoryIconCache>());
                 services.AddTransient<AccountRecordsInventoryViewModel>();
                 services.AddView<MusicPage, MusicPageViewModel>();
+                services.AddView<QuestVoicePage, QuestVoicePageViewModel>();
+                services.AddSingleton<QuestVoiceSettingsPage>();
+                services.AddSingleton<GptSovitsSettingsViewModel>();
+                services.AddSingleton<QuestVoiceGptSettingsPage>();
+                services.AddSingleton<OtherEnginesSettingsViewModel>();
+                services.AddSingleton<QuestVoiceOtherEnginesPage>();
+                services.AddSingleton(sp => new QuestVoiceSessionFactory(all.QuestVoiceConfig, Core.Config.Global.StartUpPath));
+                services.AddSingleton<IQuestVoiceSessionFactory>(sp => sp.GetRequiredService<QuestVoiceSessionFactory>());
+                services.AddSingleton<QuestVoiceSessionController>();
+                services.AddSingleton<QuestVoiceService>();
                 services.AddSingleton<PathingConfigViewModel>();
                 services.AddSingleton<IBannerImageService, BannerImageService>();
                 services.AddTransient<WebImageInputViewModel>();
                 // services.AddView<PathingConfigView, PathingConfigViewModel>();
                 services.AddView<KeyBindingsSettingsPage, KeyBindingsSettingsPageViewModel>();
+                services.AddView<GuideWindowSettingsPage, GuideWindowSettingsPageViewModel>();
 
                 // 一条龙 ViewModels
                 // services.AddSingleton<CraftViewModel>();
@@ -323,6 +340,17 @@ public partial class App : Application
                 services.AddTransient<MaskWindow>();
                 services.AddSingleton<Func<MaskWindow>>(sp => () => sp.GetRequiredService<MaskWindow>());
                 services.AddSingleton<IMaskWindowHost, MaskWindowHost>();
+                // 悬浮小窗：服务只依赖窗口接口，窗口按需创建，见 Docs/design/guide-window.md
+                services.AddSingleton<GuideLibraryStore>();
+                services.AddTransient<GuideWindowViewModel>();
+                services.AddTransient<GuideWindow>();
+                services.AddSingleton<Func<IGuideWindowView>>(sp => () => sp.GetRequiredService<GuideWindow>());
+                services.AddTransient<GuideSubtitleWindowViewModel>();
+                services.AddTransient<GuideSubtitleWindow>();
+                services.AddSingleton<Func<IGuideSubtitleView>>(sp => () => sp.GetRequiredService<GuideSubtitleWindow>());
+                services.AddSingleton<GuideWindowService>();
+                services.AddSingleton<IGuideWindowService>(sp => sp.GetRequiredService<GuideWindowService>());
+                services.AddHostedService(sp => sp.GetRequiredService<GuideWindowService>());
                 services.AddSingleton<DialogueOptionVoiceDiagnosticState>();
                 services.AddSingleton<DialogueOptionVoiceDiagnosticService>();
                 services.AddHostedService(sp => sp.GetRequiredService<DialogueOptionVoiceDiagnosticService>());
@@ -602,6 +630,16 @@ public partial class App : Application
 
         // 先通知当前运行退出，再停止宿主服务，避免任务在依赖项释放后继续执行。
         _host.Services.GetService<TaskStopService>()?.StopAll(TaskStopReason.ApplicationShutdown);
+
+        // 在推理运行时、日志和临时文件清理之前排空配音任务；退出可以关闭本地 HTTP。
+        try
+        {
+            await _host.Services.GetRequiredService<QuestVoiceService>().StopAsync(applicationExit: true);
+        }
+        catch (Exception ex)
+        {
+            _exceptionLog.Error(ex, "自动配音退出收尾失败。");
+        }
 
         // 写入防抖窗口内尚未落盘的配置改动
         try

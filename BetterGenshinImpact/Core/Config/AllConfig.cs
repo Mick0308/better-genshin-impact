@@ -241,6 +241,9 @@ public partial class AllConfig : ObservableObject
     /// </summary>
     public MusicConfig MusicConfig { get; set; } = new();
 
+    /// <summary>原神自动配音配置，与其他模块共用配置持久化机制。</summary>
+    public QuestVoiceConfig QuestVoiceConfig { get; set; } = new();
+
     /// <summary>
     /// 脚本配置
     /// </summary>
@@ -306,6 +309,11 @@ public partial class AllConfig : ObservableObject
     /// 存储空间设置
     /// </summary>
     public StorageConfig StorageConfig { get; set; } = new();
+
+    /// <summary>
+    /// 悬浮小窗配置
+    /// </summary>
+    public GuideWindowConfig GuideWindowConfig { get; set; } = new();
 
     /// <summary>
     /// 任意配置项变更后的回调（由 ConfigService 设置为防抖保存）

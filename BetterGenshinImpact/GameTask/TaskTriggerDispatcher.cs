@@ -111,6 +111,23 @@ namespace BetterGenshinImpact.GameTask
         /// </summary>
         public event EventHandler? UiTaskStopTickEvent;
 
+        /// <summary>
+        /// 宿主已有帧的只读旁路通知。帧只在回调期间有效；订阅者必须自行复制且不得阻塞识别调度。
+        /// 不改变触发器优先级、截图频率或输入行为。
+        /// </summary>
+        public event Action<Mat>? FrameCaptured;
+
+        /// <summary>隔离旁路订阅者异常，避免影响既有实时触发器。</summary>
+        private void NotifyFrameCaptured(Mat frame)
+        {
+            if (FrameCaptured is not { } handlers) return;
+            foreach (Action<Mat> handler in handlers.GetInvocationList())
+            {
+                try { handler(frame); }
+                catch (Exception exception) { _logger.LogWarning(exception, "截图旁路订阅者处理失败"); }
+            }
+        }
+
         private GameUiCategory PrevGameUiCategory = GameUiCategory.Unknown; // 上一个UI类别
         private DateTime PrevGameUiChangeTime = DateTime.Now; // 上一次UI变化时间
         
@@ -145,10 +162,17 @@ namespace BetterGenshinImpact.GameTask
         /// </summary>
         public void BeginTask()
         {
+            bool changed;
             lock (_leaseLock)
             {
+                changed = !_inTask;
                 _inTask = true;
                 _leases.Clear();
+            }
+
+            if (changed)
+            {
+                RaiseTaskModeChanged(true);
             }
         }
 
@@ -157,10 +181,52 @@ namespace BetterGenshinImpact.GameTask
         /// </summary>
         public void EndTask()
         {
+            bool changed;
             lock (_leaseLock)
             {
+                changed = _inTask;
                 _inTask = false;
                 _leases.Clear();
+            }
+
+            if (changed)
+            {
+                RaiseTaskModeChanged(false);
+            }
+        }
+
+        /// <summary>
+        /// 进入或退出任务模式时触发，参数为是否在任务中。
+        /// 在调用 <see cref="BeginTask"/> / <see cref="EndTask"/> 的线程上、锁外触发，订阅方自行切换线程
+        /// </summary>
+        public event EventHandler<bool>? TaskModeChanged;
+
+        /// <summary>
+        /// 是否处于任务模式
+        /// </summary>
+        public bool IsInTask
+        {
+            get
+            {
+                lock (_leaseLock)
+                {
+                    return _inTask;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 通知任务模式变化；订阅方的异常只记录日志，不影响任务的进入和收尾
+        /// </summary>
+        private void RaiseTaskModeChanged(bool inTask)
+        {
+            try
+            {
+                TaskModeChanged?.Invoke(this, inTask);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "处理任务模式变化通知时出错");
             }
         }
 
@@ -469,6 +535,8 @@ namespace BetterGenshinImpact.GameTask
                 {
                     PictureInPictureService.Hide();
                 }
+
+                NotifyFrameCaptured(bitmap);
 
                 // 循环执行所有触发器 有独占状态的触发器的时候只执行独占触发器
                 using var content = new CaptureContent(bitmap, _frameIndex, _timer.Interval, runtime.SystemInfo);
