@@ -1,4 +1,5 @@
 using System;
+using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -14,6 +15,10 @@ namespace BetterGenshinImpact.ViewModel.Controls;
 /// <summary>数量编辑和补充字典维护，合法名称不允许就地重命名。</summary>
 public partial class AccountRecordsInventoryEditViewModel : ObservableObject
 {
+    /// <summary>同一编辑内容重试复用批次标识，内容改变才开始新的操作。</summary>
+    private string? _submissionContent;
+    /// <summary>当前人工提交的批次标识。</summary>
+    private string _submissionBatchId = Guid.NewGuid().ToString("N");
     /// <summary>保存入口。</summary>
     private readonly InventoryStore _store;
     /// <summary>内置目录。</summary>
@@ -74,7 +79,7 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
         _store = store; _catalog = catalog; _uid = uid; _original = row; _definitions = definitions;
         CanEditName = row == null || !definitions.ContainsKey(row.Name);
         Name = row?.Name ?? "";
-        var quantity = row?.Quantity ?? (row?.Error?.Code == "ReadFailed" ? null : row?.Error?.Incoming.Quantity);
+        var quantity = row?.Quantity ?? (row?.Error?.Code == "ReadFailed" ? null : row?.Error?.IncomingQuantity);
         QuantityText = quantity?.ToString(CultureInfo.InvariantCulture) ?? "";
         // 优先使用当前展示的推算批次，仍要求用户按游戏实际情况核对。
         var batches = row?.Expirations ?? row?.Recent.FirstOrDefault()?.Expirations ??
@@ -121,6 +126,8 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
         // 在任何字典写入前复用服务层校验，避免到期输入无效时分类已部分保存。
         var expirationError = InventoryStore.ValidateExpirations(batches, quantity);
         if (expirationError != null) { Message = expirationError; return; }
+        var content = JsonConvert.SerializeObject(new { Name = name, Quantity = quantity, MarkScanIncorrect, Expirations = batches });
+        if (_submissionContent != content) { _submissionContent = content; _submissionBatchId = Guid.NewGuid().ToString("N"); }
         try
         {
             await AccountRecordsInteractionGate.Instance.ExecuteManualAsync(async () =>
@@ -128,7 +135,8 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
                 if (CanEditCategory && !string.IsNullOrWhiteSpace(Category)) await _store.DefineAsync(name, Category);
                 await _store.SetLocalQuantityAsync(_uid, name, quantity,
                     MarkScanIncorrect && CanMarkScanIncorrect ? _original!.LastScanAttemptId : null,
-                    _original != null && _original.Name != name ? _original.Name : null, batches);
+                    _original != null && _original.Name != name ? _original.Name : null, batches, _submissionBatchId,
+                    MarkScanIncorrect && CanMarkScanIncorrect ? _original!.LastScanRecordReference : null);
             });
             Saved?.Invoke();
         }

@@ -5,6 +5,7 @@
              xmlns:behavior="clr-namespace:BetterGenshinImpact.View.Behavior"
              xmlns:controls="clr-namespace:BetterGenshinImpact.View.Controls"
              xmlns:records="clr-namespace:BetterGenshinImpact.Service.AccountRecords"
+             xmlns:models="clr-namespace:BetterGenshinImpact.ViewModel.Controls"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
              HorizontalContentAlignment="Stretch"
              VerticalContentAlignment="Stretch"
@@ -91,7 +92,7 @@
                                 <MenuItem Header="自动日期快照" IsCheckable="True"
                                           IsChecked="{Binding Data.Inventory.SnapshotsEnabled, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}"
                                           Command="{Binding Data.Inventory.ToggleSnapshotsCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
-                                <MenuItem Header="快照保留数量…" Command="{Binding Data.Inventory.SetRetentionCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="snapshots" />
+                                <MenuItem Header="快照保留数量…" Command="{Binding Data.Inventory.SetSnapshotLimitCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
                             </MenuItem>
                             <MenuItem Header="导入库存…" Command="{Binding Data.OpenImportCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
                             <MenuItem Header="导出库存…" Command="{Binding Data.ExportInventoryCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
@@ -105,14 +106,9 @@
                                 <!--  仅占位：未来可以考虑追溯来源的可靠性、来源的判断等。  -->
                                 <MenuItem Header="追踪来源提醒（未建设）" IsCheckable="True" IsChecked="False" IsEnabled="False"
                                           ToolTip="功能尚未建设。" />
-                                <MenuItem Header="自定义提醒规则…" ToolTip="InventoryRules 可配置多条独立规则，每条使用自己的 Id、条件和 Message；保存后刷新或等待一分钟，示例默认禁用。"
-                                          Command="{Binding Data.Inventory.EditWarningRulesCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
                                 <MenuItem Header="查看物品字典…" Command="{Binding Data.Inventory.ViewDictionaryCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="items" />
                                 <MenuItem Header="查看补充字典…" Command="{Binding Data.Inventory.ViewDictionaryCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="user" />
                                 <MenuItem Header="查看来源字典…" Command="{Binding Data.Inventory.ViewDictionaryCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="sources" />
-                                <Separator />
-                                <MenuItem Header="来源记录保留数量…" Command="{Binding Data.Inventory.SetRetentionCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="recent" />
-                                <MenuItem Header="事件保留数量…" Command="{Binding Data.Inventory.SetRetentionCommand, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" CommandParameter="events" />
                                 <Separator />
                                 <MenuItem Header="使用图像缓存" IsCheckable="True"
                                           ToolTip="所有子表共用；关闭仅停用图片缓存，不删除文件。"
@@ -367,21 +363,121 @@
                                     </Style>
                                 </ui:DropDownButton.Style>
                                 <ui:DropDownButton.Flyout>
-                                    <ContextMenu MinWidth="220" MaxHeight="420">
+                                    <ContextMenu Width="220" MaxHeight="420">
                                         <ContextMenu.Resources>
+                                            <!-- 字号跟随顶部“全部类型”的实际主题字号，行高保持紧凑。 -->
+                                            <Style x:Key="CategoryFilterCheck" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+                                                <Setter Property="FontSize" Value="{Binding Items[0].FontSize, RelativeSource={RelativeSource AncestorType={x:Type ContextMenu}}, FallbackValue=14}" />
+                                                <Setter Property="Height" Value="34" />
+                                                <Setter Property="MinHeight" Value="0" />
+                                                <Setter Property="Padding" Value="0" />
+                                                <Setter Property="VerticalContentAlignment" Value="Center" />
+                                            </Style>
+                                            <!-- 同一滚动列表连续展示背包页；折叠仅影响子类型可见性，不改变筛选状态。 -->
+                                            <DataTemplate x:Key="CategoryGroupTemplate" DataType="{x:Type models:AccountRecordsCategoryOption}">
+                                                <StackPanel>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" Style="{StaticResource CategoryFilterCheck}">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <Image Width="24" Height="24" Source="{Binding PageIcon, Mode=OneWay}"
+                                                                       Stretch="Uniform" RenderOptions.BitmapScalingMode="HighQuality" />
+                                                                <TextBlock Text="{Binding Name, Mode=OneWay}" VerticalAlignment="Center" Margin="4,0,0,0" />
+                                                            </StackPanel>
+                                                        </CheckBox>
+                                                        <Border Grid.Column="1" Height="1" Margin="6,0,0,0" VerticalAlignment="Center"
+                                                                Background="{DynamicResource ControlStrokeColorDefaultBrush}" />
+                                                        <ToggleButton x:Name="PageExpansion" Grid.Column="2" IsChecked="{Binding IsExpanded, Mode=TwoWay}" Width="20" Height="24"
+                                                                      MinWidth="0" MinHeight="0" Padding="0" Margin="4,0,10,0"
+                                                                      VerticalAlignment="Center" AutomationProperties.Name="{Binding Name, Mode=OneWay}">
+                                                            <ToggleButton.Style>
+                                                                <Style TargetType="ToggleButton" BasedOn="{StaticResource {x:Type ToggleButton}}">
+                                                                    <!-- 使用居中的线条箭头；点击区域透明，状态切换不改变颜色。 -->
+                                                                    <Setter Property="Template">
+                                                                        <Setter.Value>
+                                                                            <ControlTemplate TargetType="ToggleButton">
+                                                                                <Grid Background="Transparent">
+                                                                                    <Path x:Name="ExpansionArrow" Width="10" Height="5" Stretch="Fill"
+                                                                                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                                          Data="M 0,0 L 5,5 L 10,0"
+                                                                                          Stroke="{DynamicResource TextFillColorPrimaryBrush}" StrokeThickness="1.5"
+                                                                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" />
+                                                                                </Grid>
+                                                                                <ControlTemplate.Triggers>
+                                                                                    <Trigger Property="IsChecked" Value="False">
+                                                                                        <Setter TargetName="ExpansionArrow" Property="Data" Value="M 0,5 L 5,0 L 10,5" />
+                                                                                    </Trigger>
+                                                                                </ControlTemplate.Triggers>
+                                                                            </ControlTemplate>
+                                                                        </Setter.Value>
+                                                                    </Setter>
+                                                                    <Setter Property="ToolTip" Value="收起材料类型" />
+                                                                    <Style.Triggers>
+                                                                        <Trigger Property="IsChecked" Value="False">
+                                                                            <Setter Property="ToolTip" Value="展开材料类型" />
+                                                                        </Trigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </ToggleButton.Style>
+                                                        </ToggleButton>
+                                                    </Grid>
+                                                    <ItemsControl x:Name="CategoryChildren" ItemsSource="{Binding Children, Mode=OneWay}" Margin="12,0,0,0">
+                                                        <ItemsControl.ItemTemplate>
+                                                            <DataTemplate>
+                                                                <CheckBox Content="{Binding Name, Mode=OneWay}" Style="{StaticResource CategoryFilterCheck}"
+                                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                                            </DataTemplate>
+                                                        </ItemsControl.ItemTemplate>
+                                                    </ItemsControl>
+                                                </StackPanel>
+                                                <DataTemplate.Triggers>
+                                                    <Trigger SourceName="PageExpansion" Property="IsChecked" Value="False">
+                                                        <Setter TargetName="CategoryChildren" Property="Visibility" Value="Collapsed" />
+                                                    </Trigger>
+                                                </DataTemplate.Triggers>
+                                            </DataTemplate>
                                             <Style TargetType="MenuItem" BasedOn="{StaticResource {x:Type MenuItem}}">
-                                                <Setter Property="Header" Value="{Binding Name, Mode=OneWay}" />
-                                                <Setter Property="IsCheckable" Value="True" />
-                                                <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                                <Setter Property="Header" Value="{Binding Mode=OneWay}" />
+                                                <Setter Property="IsCheckable" Value="False" />
                                                 <Setter Property="StaysOpenOnClick" Value="True" />
                                             </Style>
                                         </ContextMenu.Resources>
                                         <ContextMenu.ItemsSource>
                                             <CompositeCollection>
-                                                <MenuItem Header="全部类型" IsCheckable="True" StaysOpenOnClick="True"
-                                                          IsChecked="{Binding Data.Inventory.AllCategoriesSelected, Source={StaticResource AccountRecordsProxy}, Mode=TwoWay}" />
+                                                <MenuItem IsCheckable="False" StaysOpenOnClick="True" Focusable="False" HorizontalContentAlignment="Stretch">
+                                                    <MenuItem.Template>
+                                                        <!-- 全选与分组使用同一种复选框，避免菜单勾选标记的外观差异。 -->
+                                                        <ControlTemplate TargetType="MenuItem">
+                                                            <Border Padding="8,0">
+                                                                <ContentPresenter ContentSource="Header" HorizontalAlignment="Stretch" />
+                                                            </Border>
+                                                        </ControlTemplate>
+                                                    </MenuItem.Template>
+                                                    <MenuItem.Header>
+                                                        <CheckBox Content="全部类型" Style="{StaticResource CategoryFilterCheck}"
+                                                                  IsChecked="{Binding Data.Inventory.AllCategoriesSelected, Source={StaticResource AccountRecordsProxy}, Mode=TwoWay}" />
+                                                    </MenuItem.Header>
+                                                </MenuItem>
                                                 <Separator />
-                                                <CollectionContainer Collection="{Binding Data.Inventory.Categories, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}" />
+                                                <MenuItem IsCheckable="False" StaysOpenOnClick="True" Focusable="False"
+                                                          HorizontalContentAlignment="Stretch">
+                                                    <MenuItem.Template>
+                                                        <!-- 分组面板自行提供复选框，不再占用菜单的勾选和子菜单箭头栏。 -->
+                                                        <ControlTemplate TargetType="MenuItem">
+                                                            <Border Padding="8,0">
+                                                                <ContentPresenter ContentSource="Header" HorizontalAlignment="Stretch" />
+                                                            </Border>
+                                                        </ControlTemplate>
+                                                    </MenuItem.Template>
+                                                    <MenuItem.Header>
+                                                        <!-- 仅分组列表滚动，全部类型与底部操作保持可见。 -->
+                                                        <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto"
+                                                                      HorizontalScrollBarVisibility="Disabled">
+                                                            <ItemsControl ItemsSource="{Binding Data.Inventory.Categories, Source={StaticResource AccountRecordsProxy}, Mode=OneWay}"
+                                                                          ItemTemplate="{StaticResource CategoryGroupTemplate}" />
+                                                        </ScrollViewer>
+                                                    </MenuItem.Header>
+                                                </MenuItem>
                                                 <Separator />
                                                 <MenuItem IsCheckable="False" IsChecked="False" StaysOpenOnClick="True">
                                                     <MenuItem.Header>

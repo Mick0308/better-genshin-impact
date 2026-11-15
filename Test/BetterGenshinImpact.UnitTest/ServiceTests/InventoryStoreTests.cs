@@ -26,31 +26,29 @@ public sealed class InventoryStoreTests : IDisposable
         try
         {
             Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
-            var retention = _store.SetRetentionAsync("recent", 10, 5);
+            var retention = _store.SetSnapshotLimitAsync(10, 7);
             release.Set();
             await Task.WhenAll(preference, retention);
             var settings = await _store.GetSettingsAsync();
             Assert.True(settings.ShowExpirationColumn);
-            Assert.Equal(10, settings.RecentLimit);
+            Assert.Equal(10, settings.SnapshotLimit);
             await _store.UpdateSettingsAsync(value => value.UseImageCache = false);
-            Assert.Equal(10, (await _store.GetSettingsAsync()).RecentLimit);
+            Assert.Equal(10, (await _store.GetSettingsAsync()).SnapshotLimit);
         }
         finally { release.Set(); }
     }
 
     /// <summary>确认期间上限改变后，旧确认不得保存设置或触发历史裁剪。</summary>
     [Theory]
-    [InlineData("recent", 5, 10, 1)]
-    [InlineData("snapshots", 7, 20, 1)]
-    [InlineData("events", 5000, 10000, 1000)]
-    public async Task Retention_RejectsStaleConfirmation(string kind, int original, int raised, int lower)
+    [InlineData(7, 20, 1)]
+    public async Task Retention_RejectsStaleConfirmation( int original, int raised, int lower)
     {
-        await _store.SetRetentionAsync(kind, raised, original);
+        await _store.SetSnapshotLimitAsync(raised, original);
         var path = Path.Combine(_root, "records", "settings.json");
         var before = File.ReadAllText(path);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => _store.SetRetentionAsync(kind, lower, original));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _store.SetSnapshotLimitAsync(lower, original));
         Assert.Equal(before, File.ReadAllText(path));
-        await _store.SetRetentionAsync(kind, lower, raised);
+        await _store.SetSnapshotLimitAsync(lower, raised);
     }
 
     /// <summary>普通偏好入口不能绕过保留上限的确认依据。</summary>
@@ -58,18 +56,19 @@ public sealed class InventoryStoreTests : IDisposable
     public async Task Settings_PreferenceUpdateCannotChangeRetention()
     {
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            _store.UpdateSettingsAsync(settings => settings.RecentLimit = 1));
-        Assert.Equal(5, (await _store.GetSettingsAsync()).RecentLimit);
+            _store.UpdateSettingsAsync(settings => settings.SnapshotLimit = 1));
+        Assert.Equal(7, (await _store.GetSettingsAsync()).SnapshotLimit);
     }
 
     /// <summary>归档持久化只改动受影响日期，并能完成主文件已清理后的备份清理。</summary>
     [Fact]
     public async Task Archive_UnchangedDatesRemainUntouchedAndPendingCleanupResumes()
     {
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
+        var baseline = await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
         var directory = Path.Combine(_root, "records", Uid, "events");
         Directory.CreateDirectory(directory);
-        var archived = new InventoryEvent { Name = "摩拉", State = "Completed", Archived = true,
+        // 已归档历史不重复改写。
+        var archived = new InventoryEvent { RecordReference = new() { BatchId = baseline.BatchId, RecordId = "1" }, Name = "摩拉", State = "Completed", Archived = true,
             RecordedAt = _time, EndedAt = _time };
         var date = _time.UtcDateTime.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         var archivePath = Path.Combine(directory, date + ".json");
@@ -84,7 +83,6 @@ public sealed class InventoryStoreTests : IDisposable
         var path = Path.Combine(_root, "records", Uid, "inventory.json");
         var data = JsonConvert.DeserializeObject<InventoryDocument>(File.ReadAllText(path))!;
         data.PendingArchiveCleanupDates.Add(date);
-        data.EventReceipts["摩拉"] = ["Id:" + archived.Id];
         File.WriteAllText(path, JsonConvert.SerializeObject(data));
         File.WriteAllText(archivePath, "[]");
         File.WriteAllText(archivePath + ".bak", text);
@@ -92,7 +90,6 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.False(File.Exists(archivePath + ".bak"));
         data = JsonConvert.DeserializeObject<InventoryDocument>(File.ReadAllText(path))!;
         Assert.Empty(data.PendingArchiveCleanupDates);
-        Assert.DoesNotContain(data.EventReceipts.SelectMany(pair => pair.Value), value => value.StartsWith("Id:"));
     }
 
     /// <summary>接受异常立即返回失败 Task，不同步抛错，也不进入 UID 校验和存储初始化。</summary>
@@ -167,9 +164,9 @@ public sealed class InventoryStoreTests : IDisposable
     /// <summary>固定测试账号，与实际账号无关。</summary>
     private const string Uid = "100000001";
 
-    /// <summary>非公历区域下，新事件及旧错误补建事件的 ID 仍使用可解析的公历 UTC 时间。</summary>
+    /// <summary>非公历区域下，新事件及错误事件的 ID 仍使用可解析的公历 UTC 时间。</summary>
     [Fact]
-    public async Task EventIds_UseInvariantCalendarForNewAndRestoredEvents()
+    public async Task EventIds_UseInvariantCalendar()
     {
         var previousCulture = CultureInfo.CurrentCulture;
         try
@@ -182,17 +179,12 @@ public sealed class InventoryStoreTests : IDisposable
                 CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
             Assert.InRange(parsed, before, after);
 
-            // 模拟只有错误对象、尚无关联事件的旧文件，触发补建路径。
             await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", -1)]);
-            var path = Path.Combine(_root, "records", Uid, "inventory.json");
-            var document = JObject.Parse(File.ReadAllText(path));
-            var error = document["Errors"]!["摩拉"]!.ToObject<InventoryError>()!;
-            document["Events"] = new JArray();
-            File.WriteAllText(path, document.ToString());
-
-            var restored = Assert.Single((await _store.ReadAsync(Uid)).Inventory.Events);
-            Assert.Equal(error.OccurredAt.UtcDateTime.ToString("yyyyMMdd-HHmmssfffffff", CultureInfo.InvariantCulture) + "-" + error.Id, restored.Id);
-            Assert.Equal(error.Id, restored.ErrorId);
+            var data = (await _store.ReadAsync(Uid)).Inventory;
+            var item = Assert.Single(data.Events);
+            Assert.Equal(data.Errors["摩拉"].Id, item.ErrorId);
+            _ = DateTimeOffset.ParseExact(item.Id[..22], "yyyyMMdd-HHmmssfffffff",
+                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
         }
         finally { CultureInfo.CurrentCulture = previousCulture; }
     }
@@ -316,20 +308,6 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.Empty(data.Events);
     }
 
-    /// <summary>旧错误在详情中使用明确的人工核实指引，但不修改原始事件证据。</summary>
-    [Fact]
-    public void LegacyVerificationError_ExplainsTimeOrderWithoutRewritingEvidence()
-    {
-        const string original = "核实记录已过期，无法确认当前库存变动。";
-        var entry = new InventoryEvent { Name = "摩拉", State = "Error", Message = original, History = [original] };
-        var viewModel = new AccountRecordsEventsViewModel(new InventoryDocument { Events = [entry] }, entry.Id,
-            (_, _) => Task.FromResult(new InventoryDocument()));
-        Assert.Contains("早于待核实的库存变动", viewModel.Details);
-        Assert.Contains("当前实际库存总数", viewModel.Details);
-        Assert.Equal(original, entry.Message);
-        Assert.Contains(original, viewModel.HistoryDetails);
-    }
-
     /// <summary>仅事件变化也更新总表文件时间；轻量检查不依赖库存业务时间或读取内容。</summary>
     [Fact]
     public async Task SnapshotTimestamp_TracksEventOnlyChanges()
@@ -416,7 +394,7 @@ public sealed class InventoryStoreTests : IDisposable
 
     /// <summary>新关联独立于日志文案；旧记录可在读取时补齐关联且不重写文件。</summary>
     [Fact]
-    public async Task ErrorAssociation_UsesTypedIdAndReadsLegacyHistory()
+    public async Task ErrorAssociation_UsesTypedId()
     {
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 10)]);
         await _store.ReportAsync(Uid, Source("old"), [Report("摩拉", 8, -1)]);
@@ -426,17 +404,7 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.Equal(error.Id, item.ErrorId);
         item.History.Clear();
         Assert.Equal(error.Id, item.ErrorId);
-        Assert.False(error.CanAccept);
 
-        var path = Path.Combine(_root, "records", Uid, "inventory.json");
-        var document = JObject.Parse(File.ReadAllText(path));
-        var oldEvent = document["Events"]!.OfType<JObject>().Single(value => (string?)value["Id"] == item.Id);
-        oldEvent.Remove("ErrorId");
-        var legacy = document.ToString();
-        File.WriteAllText(path, legacy);
-        data = (await _store.ReadAsync(Uid)).Inventory;
-        Assert.Equal(error.Id, data.Events.Single(value => value.Id == item.Id).ErrorId);
-        Assert.Equal(legacy, File.ReadAllText(path));
         await _store.ResolveAsync(Uid, "摩拉", error.Id, false);
         Assert.Equal(10, (await _store.ReadAsync(Uid)).Inventory.Items["摩拉"][0].Quantity);
     }
@@ -478,58 +446,6 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.DoesNotContain("Attempts", File.ReadAllText(Path.Combine(_root, "records", "sources.json")));
     }
 
-    /// <summary>旧来源摘要仅迁移一次，旧设置可读取，后续保存只使用新字段。</summary>
-    [Fact]
-    public async Task EventHistory_MigratesLegacySourcesAndSettings()
-    {
-        var directory = Path.Combine(_root, "records");
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "settings.json"), "{\"ArchivedEventLimit\":100}");
-        File.WriteAllText(Path.Combine(directory, "sources.json"), JsonConvert.SerializeObject(new
-        {
-            scan = new { Reference = "scan", DisplayName = "scan", Attempts = new[]
-                { new { Id = "old-attempt", Uid, CreatedAt = _time, Failed = true, Errors = new[] { "旧错误" } } } }
-        }));
-        var workspace = await _store.LoadAsync(Uid);
-        Assert.Equal(1000, workspace.Settings.EventLimit);
-        var item = Assert.Single(workspace.Inventory.Events);
-        Assert.Equal("old-attempt", item.AttemptId);
-        Assert.Equal("Error", item.State);
-        Assert.True(item.Archived);
-        Assert.DoesNotContain("Attempts", File.ReadAllText(Path.Combine(directory, "sources.json")));
-        Assert.Single((await _store.LoadAsync(Uid)).Inventory.Events);
-        await _store.ConfigureAsync(workspace.Settings);
-        Assert.DoesNotContain("ArchivedEventLimit", File.ReadAllText(Path.Combine(directory, "settings.json")));
-    }
-
-    /// <summary>旧字典中不支持的 UID 不阻塞合法账号迁移，重新打开后不会重复迁移。</summary>
-    [Theory]
-    [InlineData("1")]
-    [InlineData("012345678")]
-    [InlineData("12345678901234567890")]
-    public async Task SourceMigration_SkipsUnsupportedUidAndPersistsCleanup(string unsupportedUid)
-    {
-        var directory = Path.Combine(_root, "records");
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, "sources.json");
-        File.WriteAllText(path, JsonConvert.SerializeObject(new
-        {
-            scan = new { Reference = "scan", DisplayName = "scan", Attempts = new[]
-            {
-                new { Id = "unsupported", Uid = unsupportedUid, CreatedAt = _time, Failed = false, Errors = Array.Empty<string>() },
-                new { Id = "supported", Uid, CreatedAt = _time, Failed = false, Errors = Array.Empty<string>() }
-            } }
-        }));
-        var workspace = await _store.LoadAsync(Uid);
-        Assert.Equal("supported", Assert.Single(workspace.Inventory.Events).AttemptId);
-        Assert.False(Directory.Exists(Path.Combine(directory, unsupportedUid)));
-        Assert.DoesNotContain("Attempts", File.ReadAllText(path));
-        var reopened = new InventoryStore(_catalog, directory);
-        Assert.Single((await reopened.LoadAsync(Uid)).Inventory.Events);
-        await reopened.ReportAsync(Uid, Source("scan"), [Report("摩拉", 10)]);
-        Assert.Equal(10, (await reopened.ReadAsync(Uid)).Inventory.Items["摩拉"][0].Quantity);
-    }
-
     /// <summary>完成状态只为增量事件显示核实结果，显式空来源也不会阻断建行。</summary>
     [Theory]
     [InlineData("Report", null, false)]
@@ -555,7 +471,7 @@ public sealed class InventoryStoreTests : IDisposable
 
     /// <summary>软上限保护未解决事件，成功记录可淘汰；保存后不能复活已清理事件。</summary>
     [Fact]
-    public async Task EventRetention_ProtectsUnresolvedEventsAboveLimit()
+    public async Task EventHistory_KeepsCompletedAndUnresolvedEvents()
     {
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
         var path = Path.Combine(_root, "records", Uid, "inventory.json");
@@ -563,12 +479,10 @@ public sealed class InventoryStoreTests : IDisposable
         for (var index = 0; index < 1001; index++)
             data.Events.Add(new InventoryEvent { Name = "摩拉", State = index % 2 == 0 ? "Pending" : "Error" });
         File.WriteAllText(path, JsonConvert.SerializeObject(data));
-        await _store.ConfigureAsync(new AccountRecordsSettings { EventLimit = 1000 });
         var retained = (await _store.LoadAsync(Uid)).Inventory.Events;
-        Assert.Equal(1001, retained.Count);
-        Assert.All(retained, item => Assert.False(item.Archived));
-        Assert.DoesNotContain(retained, item => item.State == "Completed");
-        Assert.Equal(5000, new AccountRecordsSettings().EventLimit);
+        Assert.Equal(1002, retained.Count);
+        Assert.Equal(1001, retained.Count(item => !item.Archived));
+        Assert.Contains(retained, item => item.State == "Completed");
     }
 
     /// <summary>错误筛选不改变完整快照，从具体提醒跳转时允许显示非错误目标。</summary>
@@ -799,15 +713,14 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.Equal(12L, (await _store.LoadAsync(Uid)).Inventory.Items["甜甜花"][0].Quantity);
     }
 
-    /// <summary>队列超过配置上限只淘汰最久未上报的来源。</summary>
+    /// <summary>内部近期观测用于来源去重，不提供独立的用户保留配置。</summary>
     [Fact]
-    public async Task RecentQueue_RespectsConfiguredLimit()
+    public async Task RecentQueue_KeepsRecentSourcesForDeduplication()
     {
-        await _store.ConfigureAsync(new AccountRecordsSettings { RecentLimit = 2 });
         await _store.ReportAsync(Uid, Source("a"), [Report("甜甜花", 8)]);
         await _store.ReportAsync(Uid, Source("b"), [Report("甜甜花", 8, 1)]);
         await _store.ReportAsync(Uid, Source("c"), [Report("甜甜花", 8, 2)]);
-        Assert.Equal(new[] { "c", "b" }, (await _store.LoadAsync(Uid)).Inventory.Items["甜甜花"].Select(record => record.Source));
+        Assert.Equal(new[] { "c", "b", "a" }, (await _store.LoadAsync(Uid)).Inventory.Items["甜甜花"].Select(record => record.Source));
     }
 
     /// <summary>不带时区的外部时间被明确拒绝，而不是按本机时间猜测。</summary>
@@ -817,7 +730,6 @@ public sealed class InventoryStoreTests : IDisposable
         await _store.ReportAsync(Uid, Source("a"), [new InventoryReport { Name = "甜甜花", Quantity = 8, RecordedAt = "2026-10-26 12:00:00" }]);
         var document = (await _store.LoadAsync(Uid)).Inventory;
         Assert.Empty(document.Items);
-        Assert.False(document.Errors["甜甜花"].CanAccept);
     }
 
     /// <summary>保留记录重传不因当前值更新或待核实增量而制造新错误。</summary>
@@ -1157,45 +1069,6 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.Equal(5, workspace.Inventory.Events.Count(item => item.Source == "scan" && item.State == "Error"));
     }
 
-    /// <summary>旧规则文件的来源字段失效，新规则文件只包含物品规则。</summary>
-    [Fact]
-    public async Task WarningRules_LegacySourceFieldsAreIgnored()
-    {
-        var path = await _store.GetWarningRulesPathAsync();
-        var preset = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(path));
-        Assert.Single(preset.Properties());
-        Assert.NotNull(preset["InventoryRules"]);
-        File.WriteAllText(path, """{"Enabled":true,"Source":"*","WindowSize":3,"ErrorThreshold":1,"Message":"旧来源提醒","InventoryRules":[]}""");
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", -1)]);
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80, 1)]);
-        Assert.DoesNotContain((await _store.LoadAsync(Uid)).Inventory.Events, item => item.Kind == "SourceWarning");
-    }
-
-    /// <summary>旧来源预警自动归档，物品规则仍独立触发，不受旧顶层开关影响。</summary>
-    [Fact]
-    public async Task WarningRules_ArchiveLegacyWarningsAndKeepItemRules()
-    {
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
-        var inventoryPath = Path.Combine(_root, "records", Uid, "inventory.json");
-        var document = JObject.Parse(File.ReadAllText(inventoryPath));
-        ((JArray)document["Events"]!).Add(JObject.FromObject(new InventoryEvent
-        {
-            Id = "legacy-warning", Name = "摩拉", Source = "scan", Kind = "SourceWarning",
-            State = "Warning", Message = "旧来源提醒", History = ["原始证据"]
-        }));
-        File.WriteAllText(inventoryPath, document.ToString());
-        var path = await _store.GetWarningRulesPathAsync();
-        File.WriteAllText(path, """{"Enabled":false,"InventoryRules":[{"Id":"low-mora","Enabled":true,"Name":"摩拉","Kind":"QuantityBelow","Threshold":100,"Message":"摩拉不足"}]}""");
-
-        var workspace = await _store.LoadAsync(Uid);
-        var legacy = Assert.Single(workspace.Inventory.Events.Where(item => item.Id == "legacy-warning"));
-        Assert.True(legacy.Archived);
-        Assert.Contains("原始证据", legacy.History);
-        Assert.Contains(workspace.Inventory.Events, item => item.Kind == "ThresholdWarning" && !item.Archived && item.Message == "摩拉不足");
-        Assert.DoesNotContain((await _store.LoadAsync(Uid)).Inventory.Events,
-            item => item.Kind == "SourceWarning" && !item.Archived);
-    }
-
     /// <summary>全部重置覆盖自定义字典、来源、规则、设置及多个 UID，原数据保留独立备份。</summary>
     [Fact]
     public async Task ResetToDefaults_ReplacesAllAccountsAndSharedSettings()
@@ -1203,19 +1076,17 @@ public sealed class InventoryStoreTests : IDisposable
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
         await _store.AddUidAsync("100000002");
         await _store.DefineAsync("自定义物品", "自定义分类");
-        await _store.ConfigureAsync(new AccountRecordsSettings { RecentLimit = 9, ShowExpirationColumn = true });
+        await _store.ConfigureAsync(new AccountRecordsSettings { ShowExpirationColumn = true });
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", -1, 1)]);
         var snapshotDirectory = Path.Combine(_root, "records", Uid, "snapshots");
         Directory.CreateDirectory(snapshotDirectory);
         File.WriteAllText(Path.Combine(snapshotDirectory, "old.json"), "{}");
         var originalInventory = File.ReadAllText(Path.Combine(_root, "records", Uid, "inventory.json"));
-        var rulesPath = await _store.GetWarningRulesPathAsync();
-        File.WriteAllText(rulesPath, """{"InventoryRules":[]}""");
         await _store.ResetToDefaultsAsync();
 
         Assert.Empty(await _store.ListUidsAsync());
         var settings = await _store.GetSettingsAsync();
-        Assert.Equal(5, settings.RecentLimit);
+        Assert.Equal(7, settings.SnapshotLimit);
         Assert.False(settings.ShowExpirationColumn);
         var workspace = await _store.LoadAsync(Uid);
         Assert.Empty(workspace.Inventory.Items);
@@ -1226,8 +1097,6 @@ public sealed class InventoryStoreTests : IDisposable
         Assert.DoesNotContain("Attempts", JsonConvert.SerializeObject(presetSource));
         Assert.DoesNotContain("自定义物品", workspace.Definitions.Keys);
         Assert.Contains("须臾树脂", workspace.Definitions.Keys);
-        var rules = JsonConvert.DeserializeObject<InventoryWarningRule>(File.ReadAllText(rulesPath))!;
-        Assert.False(Assert.Single(rules.InventoryRules).Enabled);
         var backup = Assert.Single(Directory.GetDirectories(_root, "records.backup-*"));
         Assert.True(File.Exists(Path.Combine(backup, Uid, "inventory.json")));
         Assert.Equal(originalInventory, File.ReadAllText(Path.Combine(backup, Uid, "inventory.json")));
@@ -1408,19 +1277,9 @@ public sealed class InventoryStoreTests : IDisposable
     [InlineData("012345678", false)]
     [InlineData("123456789\n", false)]
     public void Uid_ValidatesLength(string uid, bool valid) => Assert.Equal(valid, InventoryStore.IsValidUid(uid));
-    /// <summary>来源集合显式空值不能进入业务逻辑。</summary>
+    /// <summary>开发期完整保留归档历史、活动事件和增量去重行为。</summary>
     [Fact]
-    public async Task Dictionary_NullAttemptsReportsField()
-    {
-        var directory = Path.Combine(_root, "records");
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(Path.Combine(directory, "sources.json"), "{\"scan\":{\"Reference\":\"scan\",\"DisplayName\":\"scan\",\"Attempts\":null}}");
-        var error = await Assert.ThrowsAsync<InvalidDataException>(() => _store.LoadAsync(Uid));
-        Assert.Contains("Attempts", error.Message);
-    }
-    /// <summary>保留上限只清理归档历史，并保留增量去重及活动事件。</summary>
-    [Fact]
-    public async Task ArchiveRetention_PreservesPendingAndDeduplication()
+    public async Task ArchiveHistory_PreservesPendingAndDeduplication()
     {
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
         var path = Path.Combine(_root, "records", Uid, "inventory.json");
@@ -1430,9 +1289,8 @@ public sealed class InventoryStoreTests : IDisposable
                 State = "Completed", Archived = true, RecordedAt = _time.AddSeconds(index + 1), EndedAt = _time.AddMinutes(index + 1) });
         data.Events.Add(new InventoryEvent { Name = "甜甜花", State = "Pending", Message = "pending" });
         File.WriteAllText(path, JsonConvert.SerializeObject(data));
-        await _store.ConfigureAsync(new AccountRecordsSettings { EventLimit = 1000 });
         var loaded = (await _store.LoadAsync(Uid)).Inventory;
-        Assert.Equal(999, loaded.Events.Count(item => item.Archived));
+        Assert.Equal(1002, loaded.Events.Count(item => item.Archived));
         Assert.Single(loaded.Events.Where(item => !item.Archived));
         var result = await _store.ReportDeltaAsync(Uid, Source("delta"),
             [new InventoryDeltaReport { Name = "摩拉", Delta = 1, RecordedAt = _time.AddSeconds(1).ToString("O") }]);
@@ -1444,7 +1302,7 @@ public sealed class InventoryStoreTests : IDisposable
             [new InventoryDeltaReport { Name = "摩拉", Delta = 1, RecordedAt = _time.AddSeconds(1).ToString("O") }]);
         Assert.Single(result.Accepted);
     }
-    /// <summary>模拟磁盘库存到期后直接读取，即使自定义规则损坏也创建一次 Pending，不扣数量。</summary>
+    /// <summary>模拟磁盘库存到期后直接读取，创建一次 Pending，不扣数量。</summary>
     [Fact]
     public async Task ExpirationCheck_LoadDetectsExpiredStockWithoutDuplicateEvents()
     {
@@ -1458,9 +1316,7 @@ public sealed class InventoryStoreTests : IDisposable
         // 仅改变持久化批次的到期时刻来模拟时间流逝，不再次上报，也不等待真实时钟。
         data.Items["须臾树脂"][0].Expirations![0].ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O");
         File.WriteAllText(Path.Combine(_root, "records", Uid, "inventory.json"), JsonConvert.SerializeObject(data));
-        File.WriteAllText(await _store.GetWarningRulesPathAsync(), "{broken");
         var workspace = await _store.LoadAsync(Uid);
-        Assert.NotNull(workspace.WarningRuleError);
         var pending = Assert.Single(workspace.Inventory.Events.Where(item => item.Kind == "ExpirationCheck"));
         Assert.Equal("Pending", pending.State);
         Assert.False(pending.Archived);
@@ -1571,7 +1427,6 @@ public sealed class InventoryStoreTests : IDisposable
         var settings = await _store.GetSettingsAsync();
         settings.ShowExpirationColumn = !settings.ShowExpirationColumn;
         await _store.ConfigureAsync(settings);
-        settings.EventLimit = 50000;
         await _store.ConfigureAsync(settings);
         foreach (var file in files) Assert.Equal(previous[file], File.GetLastWriteTimeUtc(file));
     }
@@ -1584,7 +1439,6 @@ public sealed class InventoryStoreTests : IDisposable
         await _store.ReportAsync(Uid, Source("old"), [Report("摩拉", 8, -1)]);
         var data = (await _store.LoadAsync(Uid)).Inventory;
         var error = data.Errors["摩拉"];
-        Assert.False(error.CanAccept);
         await _store.ReportDeltaAsync(Uid, Source("bad-delta"), [new()
         { Name = "摩拉", Delta = -100, RecordedAt = _time.AddMinutes(1).ToString("O") }]);
         await Assert.ThrowsAsync<InvalidOperationException>(() => _store.ResolveAsync(Uid, "摩拉", error.Id, true));
@@ -1849,38 +1703,6 @@ public sealed class InventoryStoreTests : IDisposable
         var after = (await _store.LoadAsync(Uid)).Inventory;
         Assert.Equal(JsonConvert.SerializeObject(before.Items), JsonConvert.SerializeObject(after.Items));
         Assert.Contains(after.Events, item => item.Id == pendingId && !item.Archived && item.State == "Pending");
-    }
-
-    /// <summary>历史裁剪释放墓碑，覆盖后的增量凭证清理；未覆盖凭证仍阻止重复与内容冲突。</summary>
-    [Fact]
-    public async Task ArchiveRetention_CompactsCoveredReceiptsAndKeepsContentIdentity()
-    {
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
-        var path = Path.Combine(_root, "records", Uid, "inventory.json");
-        var data = JsonConvert.DeserializeObject<InventoryDocument>(File.ReadAllText(path))!;
-        for (var index = 0; index < 1001; index++)
-            data.Events.Add(new InventoryEvent { Name = "摩拉", Kind = "Delta", Source = "delta", Quantity = 1,
-                State = "Completed", Archived = true, RecordedAt = _time.AddSeconds(index + 1), EndedAt = _time.AddSeconds(index + 1) });
-        File.WriteAllText(path, JsonConvert.SerializeObject(data));
-        await _store.ConfigureAsync(new AccountRecordsSettings { EventLimit = 1000 });
-        data = (await _store.LoadAsync(Uid)).Inventory;
-        Assert.DoesNotContain(data.EventReceipts.SelectMany(pair => pair.Value), value => value.StartsWith("Id:"));
-        Assert.Contains(data.EventReceipts.SelectMany(pair => pair.Value), value => value.StartsWith("DeltaV2:"));
-        Assert.DoesNotContain(data.Events, item => item.Kind == "Delta" && item.RecordedAt == _time.AddSeconds(1));
-        // 使用新实例证明去重依赖已落盘凭证，而不是仍保留的事件或实例内状态。
-        var reloaded = new InventoryStore(_catalog, Path.Combine(_root, "records"));
-        var report = new InventoryDeltaReport { Name = "摩拉", Delta = 1, RecordedAt = _time.AddSeconds(1).ToString("O") };
-        Assert.Equal(1, (await reloaded.ReportDeltaAsync(Uid, Source("delta"), [report])).DuplicateCount);
-        report.Delta = 2;
-        Assert.Single((await _store.ReportDeltaAsync(Uid, Source("delta"), [report])).Rejected);
-        await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 100, 30)]);
-        data = (await _store.LoadAsync(Uid)).Inventory;
-        Assert.DoesNotContain(data.EventReceipts.SelectMany(pair => pair.Value), value => value.StartsWith("DeltaV2:"));
-        report.Delta = 1;
-        var replay = await reloaded.ReportDeltaAsync(Uid, Source("delta"), [report]);
-        Assert.Empty(replay.Accepted);
-        Assert.Contains("早于", Assert.Single(replay.Rejected).Value);
-        Assert.Equal(100, (await reloaded.LoadAsync(Uid)).Inventory.Items["摩拉"][0].Quantity);
     }
 
     /// <summary>重复错误不计为新增；归档后重复不再提示未处理异常。</summary>

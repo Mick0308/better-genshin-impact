@@ -18,17 +18,10 @@ public sealed class AccountRecordsSettings
     public bool ShowMissingIconRowNumbers { get; set; }
     /// <summary>是否显示库存到期时间列，默认隐藏，不因数据包含到期信息而自动开启。</summary>
     public bool ShowExpirationColumn { get; set; }
-    /// <summary>每种材料最近来源数，含当前项，范围 1～10。</summary>
-    public int RecentLimit { get; set; } = 5;
     /// <summary>是否自动生成日期快照。</summary>
     public bool SnapshotsEnabled { get; set; } = true;
     /// <summary>保留有快照的日期数量，范围 1～30。</summary>
     public int SnapshotLimit { get; set; } = 7;
-    /// <summary>每个 UID 的事件保留软上限，范围 1000～50000；未解决事件不自动清理。</summary>
-    public int EventLimit { get; set; } = 5000;
-    /// <summary>兼容旧设置；仅反序列化，后续保存统一使用 EventLimit。</summary>
-    [JsonProperty("ArchivedEventLimit")]
-    private int LegacyArchivedEventLimit { set => EventLimit = Math.Clamp(value, 1000, 50000); }
     /// <summary>优先展示可读来源名称。</summary>
     public bool PreferReadableSource { get; set; } = true;
 }
@@ -36,12 +29,6 @@ public sealed class AccountRecordsSettings
 /// <summary>跨账号共享的来源描述，不保存临时执行目录。</summary>
 public sealed class AccountRecordSource
 {
-    /// <summary>仅供旧来源文件迁移使用，不再写入字典。</summary>
-    [JsonIgnore]
-    internal List<InventorySourceAttempt> LegacyAttempts { get; private set; } = [];
-    /// <summary>接收旧版批次记录，迁移完成后由事件存储承载。</summary>
-    [JsonProperty("Attempts")]
-    private List<InventorySourceAttempt> ImportedAttempts { set => LegacyAttempts = value; }
     /// <summary>目录或内置任务标识，包含仓库前缀以区分同名目录。</summary>
     public string Reference { get; set; } = "";
     /// <summary>上报时的可读名称。</summary>
@@ -51,6 +38,11 @@ public sealed class AccountRecordSource
 /// <summary>补充字典条目，包含初始值和用户添加的内容；不修改模型资源。</summary>
 public sealed class InventoryItemOverride
 {
+    /// <summary>供开发者查看的说明，包含人工备注及补充来源，不参与业务判断。</summary>
+    public string Comment { get; set; } = "";
+    /// <summary>背包页覆写；省略或 null 回退 CSV，空字符串明确设为未分类。</summary>
+    [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+    public string? Page { get; set; }
     /// <summary>补充分类；原字典已有非空分类时不允许覆盖。</summary>
     public string Category { get; set; } = "";
 }
@@ -61,10 +53,10 @@ public sealed class InventoryWorkspace
     /// <summary>读取时总表文件的修改时间，仅用于判断是否复用展示快照。</summary>
     [JsonIgnore]
     public DateTime UpdatedAt { get; set; }
-    /// <summary>规则配置错误独立提示，不影响库存读取和上报。</summary>
-    public string? WarningRuleError { get; set; }
     /// <summary>公共目录叠加用户补充后的名称和分类。</summary>
     public Dictionary<string, string> Definitions { get; set; } = [];
+    /// <summary>公共目录叠加补充字典后的物品背包页。</summary>
+    public Dictionary<string, string> Pages { get; set; } = [];
     /// <summary>账号库存与异常。</summary>
     public InventoryDocument Inventory { get; set; } = new();
     /// <summary>公共来源描述。</summary>

@@ -20,6 +20,113 @@ namespace BetterGenshinImpact.UnitTest.ServiceTests;
 /// <summary>用独立 STA 消息循环验证账号切换和原位刷新，不启动主程序或显示窗口。</summary>
 public sealed class InventoryViewRefreshTests
 {
+    /// <summary>分类来自完整库存行而非字典或搜索结果，包含零库存、无基准增量和未知物品错误。</summary>
+    [Fact]
+    public Task CategoryFilter_OnlyListsInventoryCategories() => RunSta(async () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "InventoryCategoryFilterTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var csv = Path.Combine(root, "items.csv");
+            File.WriteAllText(csv, "item_name,material_type,page\n甜甜花,植物,材料\n铁块,矿物,材料\n苹果,食材,食物\n木材,木料,材料\n");
+            var catalog = new InventoryCatalog(csv);
+            var store = new InventoryStore(catalog, Path.Combine(root, "records"));
+            const string uid = "100000001";
+            var source = new AccountRecordSource { Reference = "scan", DisplayName = "scan" };
+            var time = DateTimeOffset.UtcNow.AddHours(-1).ToString("O");
+            await store.ReportAsync(uid, source, [new() { Name = "甜甜花", Quantity = 0, RecordedAt = time }]);
+            await store.ReportDeltaAsync(uid, source, [new() { Name = "铁块", Delta = 5, RecordedAt = time }]);
+            await store.ReportAsync(uid, source, [new() { Name = "未知物品", Quantity = -1, RecordedAt = time }]);
+            var vm = new AccountRecordsInventoryViewModel(store, catalog, new InventoryIconCache(Path.Combine(root, "icons")));
+            await vm.SelectUidAsync(uid);
+            Assert.Equal(2, vm.Categories.Count);
+            var materials = Assert.Single(vm.Categories.Where(item => item.Page == "材料"));
+            Assert.Equal(new[] { "植物", "矿物" }, materials.Children.Select(item => item.Category).OrderBy(item => item, StringComparer.Ordinal));
+            Assert.Single(vm.Categories.Where(item => item.Page == ""));
+            vm.SearchText = "不存在";
+            Assert.Empty(vm.Items.Cast<object>());
+            Assert.Equal(2, vm.Categories.Count);
+            vm.SearchText = "";
+            materials.Children.Single(item => item.Category == "矿物").IsSelected = false;
+            await store.DeleteItemAsync(uid, "甜甜花");
+            await vm.RefreshTimeWarningsCommand.ExecuteAsync(null);
+            var remaining = Assert.Single(vm.Categories.Single(item => item.Page == "材料").Children);
+            Assert.Equal("矿物", remaining.Category);
+            Assert.False(remaining.IsSelected);
+            await vm.SelectUidAsync("100000002");
+            Assert.Empty(vm.Categories);
+            await vm.SelectUidAsync(null);
+            Assert.Empty(vm.Categories);
+        }
+        finally { Directory.Delete(root, true); }
+    });
+
+    /// <summary>物品历史分页不重复，每页合并批次读取，失败后可重试，并可独立布局。</summary>
+    [Fact]
+    public Task ItemHistory_PagesAndRetriesWithoutRepeatingCards() => RunSta(async () =>
+    {
+        var calls = 0;
+        var fail = false;
+        var batch = new InventoryBatch { BatchId = "a", Records = Enumerable.Range(0, 51)
+            .Select(i => new InventoryBatchRecord { RecordId = i.ToString(), Name = "摩拉", Kind = "Delta", Outcome = "Accepted", Input = JObject.FromObject(new { Delta = 5 }) }).ToList() };
+        var vm = new AccountRecordsItemDetailsViewModel(new() { Name = "摩拉" }, new Dictionary<string, AccountRecordSource>(), true,
+            () => Task.FromResult(Enumerable.Range(0, 51).Select(i => new InventoryBatchIndexEntry
+                { Reference = new() { BatchId = "a", RecordId = i.ToString() } }).ToArray()),
+            refs => { calls++; return fail ? Task.FromException<InventoryBatchRecord?[]>(new IOException("测试失败")) : Task.FromResult(refs.Select(reference => batch.Records.FirstOrDefault(record => record.RecordId == reference.RecordId)).ToArray()); });
+        await vm.LoadMoreCommand.ExecuteAsync(null);
+        Assert.Equal(50, vm.History.Count);
+        Assert.Equal(1, calls);
+        Assert.True(vm.HasMore);
+        Assert.Contains("变动数量：5", vm.History[0].Summary);
+        fail = true;
+        await vm.LoadMoreCommand.ExecuteAsync(null);
+        Assert.Contains("读取失败", vm.HistoryStatus);
+        Assert.Equal(50, vm.History.Count);
+        fail = false;
+        await vm.LoadMoreCommand.ExecuteAsync(null);
+        Assert.Equal(51, vm.History.Count);
+        Assert.False(vm.HasMore);
+        var dialog = new AccountRecordsItemDetailsDialog(vm);
+        try
+        {
+            var content = Assert.IsAssignableFrom<FrameworkElement>(dialog.Content);
+            content.Measure(new Size(620, 540));
+            content.Arrange(new Rect(0, 0, 620, 540));
+            content.UpdateLayout();
+            Assert.True(content.ActualHeight > 0);
+        }
+        finally { dialog.Close(); }
+    });
+
+    /// <summary>批次入口可实例化布局，异步返回不会覆盖后来选中事件的详情。</summary>
+    [Fact]
+    public Task BatchDetails_LayoutAndSelectionStayConsistent() => RunSta(async () =>
+    {
+        var first = new InventoryEvent { Name = "摩拉", RecordReference = new() { BatchId = "a", RecordId = "1" } };
+        var second = new InventoryEvent { Name = "经验书", RecordReference = new() { BatchId = "b", RecordId = "1" } };
+        var inventory = new InventoryDocument { Events = [first, second] };
+        var response = new TaskCompletionSource<InventoryBatch?>();
+        var vm = new AccountRecordsEventsViewModel(inventory, first.Id, (_, _) => Task.FromResult(inventory),
+            loadBatch: _ => response.Task);
+        var dialog = new AccountRecordsEventsDialog(vm);
+        try
+        {
+            var content = Assert.IsAssignableFrom<FrameworkElement>(dialog.Content);
+            content.Measure(new Size(860, 640));
+            content.Arrange(new Rect(0, 0, 860, 640));
+            content.UpdateLayout();
+            Assert.True(content.ActualHeight > 0);
+            Assert.True(vm.HasBatch);
+            var loading = vm.ShowBatchCommand.ExecuteAsync(null);
+            vm.Selected = second;
+            response.SetResult(new() { BatchId = "a", Kind = "Report" });
+            await loading;
+            Assert.Empty(vm.BatchDetails);
+        }
+        finally { dialog.Close(); }
+    });
+
     /// <summary>切换加载中或读取失败后保存显示偏好，不得覆盖最新保留上限。</summary>
     [Theory]
     [InlineData(false)]
@@ -35,7 +142,7 @@ public sealed class InventoryViewRefreshTests
             var vm = new AccountRecordsInventoryViewModel(store, catalog, new InventoryIconCache());
             await vm.LoadPreferencesAsync();
             // 模拟其他入口更新设置，使本页缓存也落后于磁盘。
-            await store.ConfigureAsync(new() { RecentLimit = 10, SnapshotLimit = 30, EventLimit = 50000 });
+            await store.ConfigureAsync(new() { SnapshotLimit = 30 });
             var loading = vm.SelectUidAsync("invalid-uid");
             if (!duringLoading) await loading;
             await vm.ToggleExpirationColumnCommand.ExecuteAsync(null);
@@ -45,9 +152,7 @@ public sealed class InventoryViewRefreshTests
             await vm.ToggleSourceNamesCommand.ExecuteAsync(null);
             await vm.ToggleSnapshotsCommand.ExecuteAsync(null);
             var settings = await store.GetSettingsAsync();
-            Assert.Equal(10, settings.RecentLimit);
             Assert.Equal(30, settings.SnapshotLimit);
-            Assert.Equal(50000, settings.EventLimit);
         }
         finally { Directory.Delete(root, true); }
     });

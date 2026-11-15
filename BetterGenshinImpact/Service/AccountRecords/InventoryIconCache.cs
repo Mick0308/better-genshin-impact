@@ -1,10 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Media.Imaging;
-using BetterGenshinImpact.Core.Config;
 using BetterGenshinImpact.Infrastructure.Storage;
 using System.Threading.Tasks;
 using OpenCvSharp;
@@ -17,11 +17,20 @@ public sealed class InventoryIconCache : IStorageAreaProvider
     /// <summary>串行写入与清理，避免同一进程删除正在使用的缓存。</summary>
     private readonly object _gate = new();
     /// <summary>图标只能通过重新采集或上传补齐，独立存放，不参与通用缓存自动淘汰。</summary>
-    private readonly string _cacheRoot = Path.Combine(AppPaths.Cache, "AccountRecords");
+    private readonly string _cacheRoot;
 
-    /// <summary>模型版本变化后使用不同缓存目录，避免复用过期识别图标。</summary>
-    private readonly string _root = Path.Combine(AppPaths.Cache, "AccountRecords", "icons",
-        File.GetLastWriteTimeUtc(Global.Absolute(@"Assets\Model\ItemV2\item.csv")).Ticks.ToString());
+    /// <summary>按标准名称长期复用，不因 CSV 内容或修改时间变化切换目录。</summary>
+    private readonly string _root;
+
+    /// <summary>使用所有账号共享的物品图标目录。</summary>
+    public InventoryIconCache() : this(Path.Combine(AppPaths.Cache, "AccountRecords")) { }
+
+    /// <summary>允许在独立目录中验证图标读写。</summary>
+    public InventoryIconCache(string cacheRoot)
+    {
+        _cacheRoot = cacheRoot;
+        _root = Path.Combine(cacheRoot, "icons");
+    }
 
     /// <summary>标准名称生成安全文件名。</summary>
     private string PathFor(string name) => Path.Combine(_root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name))) + ".png");
@@ -30,19 +39,22 @@ public sealed class InventoryIconCache : IStorageAreaProvider
     /// <remarks>TODO：写入入口尚未接入 UseImageCache；外围程序关闭缓存时应忽略建立和更新请求。</remarks>
     public void Store(string name, byte[] encodedImage)
     {
-        lock (_gate) StoreCore(name, encodedImage);
+        lock (_gate)
+        {
+            StoreCore(name, encodedImage);
+        }
     }
 
-    /// <summary>检查当前模型下是否存在物品缓存文件，无需加载或解码图像。</summary>
-    public bool Exists(string name)
-    {
-        lock (_gate) return File.Exists(PathFor(name));
-    }
+    /// <summary>界面只读查询，不接续旧目录、不等待后台加载锁；旧缓存由后台读取或写入时接续。</summary>
+    public bool Exists(string name) => File.Exists(PathFor(name));
 
     /// <summary>删除当前模型下单个物品的共享缓存，等待重新采集。</summary>
     public void Delete(string name)
     {
-        lock (_gate) File.Delete(PathFor(name));
+        lock (_gate)
+        {
+            File.Delete(PathFor(name));
+        }
     }
 
     /// <summary>生成标准尺寸；不自动删除旧图标，清理须由用户明确发起。</summary>
@@ -98,7 +110,7 @@ public sealed class InventoryIconCache : IStorageAreaProvider
             image.Freeze();
             return image;
         }
-        catch (Exception ex) when (ex is IOException or NotSupportedException or System.IO.FileFormatException) { return null; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or System.IO.FileFormatException) { return null; }
     }
 
     /// <summary>清除 AccountRecords 统一目录下的全部派生图像缓存，不接触账号数据。</summary>

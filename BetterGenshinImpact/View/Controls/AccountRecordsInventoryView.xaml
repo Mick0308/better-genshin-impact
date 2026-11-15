@@ -232,7 +232,7 @@
                         <Setter.Value>
                             <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}, Mode=OneWay}">
                                 <MenuItem Header="{Binding PriorActionText, Mode=OneWay}" Command="{Binding Data.TogglePriorCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" />
-                                <MenuItem Header="查看物品详情…" ToolTip="双击物品行也可查看最近来源记录" Command="{Binding Data.ShowRecentCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" />
+                                <MenuItem Header="查看物品详情…" ToolTip="双击物品行也可查看库存与历史记录" Command="{Binding Data.ShowRecentCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" />
                                 <MenuItem Header="修改数量 / 修订字典" Command="{Binding Data.EditCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" />
                                 <MenuItem Header="归档同类未受阻的完成事件" Command="{Binding Data.ArchiveCompletedEventsCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" Visibility="{Binding CanBatchArchive, Converter={StaticResource BoolVisibility}, Mode=OneWay}" />
                                 <MenuItem Header="查看异常" Command="{Binding Data.ShowStatusCommand, Source={StaticResource InventoryProxy}, Mode=OneWay}" CommandParameter="{Binding Mode=OneWay}" IsEnabled="{Binding HasStatusLight, Mode=OneWay}" />
@@ -321,7 +321,20 @@
                 </DataGridTemplateColumn>
                 <!-- 固定默认宽度，不随窗口压缩；放不下时使用横向滚动。 -->
                 <DataGridTextColumn Header="名称" Binding="{Binding Name, Mode=OneWay}" SortMemberPath="ItemNameSortKey" ElementStyle="{StaticResource InventoryText}" Width="156" MinWidth="44" />
-                <DataGridTextColumn Header="类型" Binding="{Binding Category, Mode=OneWay}" ElementStyle="{StaticResource InventoryText}" Width="112" MinWidth="44" />
+                <DataGridTemplateColumn Header="类型" SortMemberPath="Category" Width="156" MinWidth="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <!-- 保留原始类型文字，PNG 只表达所属背包页；缺失图片时仍保留 36×36 占位以对齐文字。 -->
+                                <Image Width="36" Height="36" Stretch="Uniform" Source="{Binding PageIcon, Mode=OneWay}"
+                                       ToolTip="{Binding PageDescription, Mode=OneWay}" RenderOptions.BitmapScalingMode="HighQuality" />
+                                <TextBlock Grid.Column="1" Text="{Binding Category, Mode=OneWay}" Style="{StaticResource InventoryText}"
+                                           ToolTip="{Binding CategoryDescription, Mode=OneWay}" />
+                            </Grid>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
                 <DataGridTemplateColumn Header="库存" SortMemberPath="Quantity" HeaderStyle="{StaticResource InventoryQuantityHeader}" Width="120" MinWidth="44">
                     <DataGridTemplateColumn.CellTemplate><DataTemplate>
                         <Grid ClipToBounds="True">
