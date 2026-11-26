@@ -12,7 +12,7 @@ public sealed class InventoryBatch
     public int SchemaVersion { get; set; } = 1;
     /// <summary>账号目录内的批次标识。</summary>
     public string BatchId { get; set; } = "";
-    /// <summary>Report、Delta、Import、Manual或 Failure。</summary>
+    /// <summary>Report、Delta、Import、Manual、Failure 或 Mixed；导入可包含多种记录。</summary>
     public string Kind { get; set; } = "";
     /// <summary>接收时间，仅用于追溯，不参与业务时间判断。</summary>
     public DateTimeOffset ReceivedAt { get; set; }

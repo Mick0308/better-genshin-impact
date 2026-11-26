@@ -2,6 +2,8 @@ using BetterGenshinImpact.Service.AccountRecords;
 using BetterGenshinImpact.Service.AccountRecords.Model;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace BetterGenshinImpact.UnitTest.ServiceTests;
 
@@ -36,6 +38,75 @@ public sealed class InventoryBatchTests : IDisposable
     { Name = name, Quantity = quantity, RecordId = id, RecordedAt = _time.AddMinutes(minute).ToString("O") };
     /// <summary>主状态路径。</summary>
     private string InventoryPath => Path.Combine(_root, "records", Uid, "inventory.json");
+
+    /// <summary>旧成功输入与新冲突输入混合重传时，错误引用必须指向新输入。</summary>
+    [Fact]
+    public async Task MixedReplay_RejectionReferencesNewInput()
+    {
+        await _store.ReportAsync(Uid, _source, [Report("摩拉", 10, id: "old")], batchId: "mixed-replay");
+        await _store.ReportAsync(Uid, _source,
+            [Report("摩拉", 10, id: "old"), Report("摩拉", 11, id: "new")], batchId: "mixed-replay");
+        var data = (await _store.ReadAsync(Uid)).Inventory;
+        Assert.Equal(10, data.Items["摩拉"][0].Quantity);
+        Assert.Equal("new", data.Errors["摩拉"].RecordReference!.RecordId);
+        Assert.Equal("new", Assert.Single(data.Events.Where(item => item.State == "Error")).RecordReference!.RecordId);
+        var batch = (await _store.GetBatchAsync(Uid, "mixed-replay"))!;
+        Assert.Equal("Accepted", batch.Records.Single(item => item.RecordId == "old").Outcome);
+        Assert.Equal("Rejected", batch.Records.Single(item => item.RecordId == "new").Outcome);
+    }
+
+    /// <summary>成功人工提交重传不受后续到期状态影响，新提交仍需提供到期信息。</summary>
+    [Fact]
+    public async Task ManualReplay_PrecedesCurrentExpirationRequirements()
+    {
+        await _store.SetLocalQuantityAsync(Uid, "摩拉", 10, batchId: "manual-retry");
+        await _store.SetLocalQuantityAsync(Uid, "摩拉", 20,
+            expirations: [new() { Quantity = 20, ExpiresAt = DateTimeOffset.UtcNow.AddDays(1).ToString("O") }], batchId: "new-manual");
+        await _store.SetLocalQuantityAsync(Uid, "摩拉", 10, batchId: "manual-retry");
+        Assert.Equal(20, (await _store.ReadAsync(Uid)).Inventory.Items["摩拉"][0].Quantity);
+        await Assert.ThrowsAsync<ArgumentException>(() => _store.SetLocalQuantityAsync(Uid, "摩拉", 10, batchId: "fresh-manual"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _store.SetLocalQuantityAsync(Uid, "摩拉", 11, batchId: "manual-retry"));
+    }
+
+    /// <summary>混合类型追加与大小写不同的身份均保留，重传不会增加索引条目。</summary>
+    [Fact]
+    public async Task MixedKinds_IndexKeepsDistinctIdentitiesAndRetries()
+    {
+        await _store.ReportAsync(Uid, _source, [Report("摩拉", 10, id: "A")], batchId: "Group");
+        var delta = new InventoryDeltaReport { RecordId = "a", Name = "摩拉", Delta = 2, RecordedAt = _time.AddMinutes(1).ToString("O") };
+        await _store.ReportDeltaAsync(Uid, _source, [delta], "Group");
+        await _store.ReportDeltaAsync(Uid, _source, [delta], "Group");
+        await _store.ReportAsync(Uid, _source, [Report("摩拉", 12, 2, "A")], batchId: "group");
+        Assert.Equal("Mixed", (await _store.GetBatchAsync(Uid, "Group"))!.Kind);
+        var index = await _store.GetItemHistorySnapshotAsync(Uid, "摩拉");
+        Assert.Equal(3, index.Length);
+        Assert.Equal(3, index.Select(item => (item.Reference.BatchId, item.Reference.RecordId)).Distinct().Count());
+        var diskIndex = JArray.Parse(File.ReadAllText(Path.Combine(_root, "records", Uid, "batch-index.json")));
+        Assert.Equal(3, diskIndex.Count);
+    }
+
+    /// <summary>增量已提交但批次发布失败后，同身份重试补齐来源而不重复累加。</summary>
+    [Fact]
+    public async Task DeltaRetry_RepairsSourceAfterPublicationFailure()
+    {
+        await _store.ReportAsync(Uid, _source, [Report("摩拉", 10)]);
+        var source = new AccountRecordSource { Reference = "new-source", DisplayName = "新来源" };
+        var delta = new InventoryDeltaReport { Name = "摩拉", Delta = 2, RecordedAt = _time.AddMinutes(1).ToString("O") };
+        var batchFile = Path.Combine(_root, "records", Uid, "batches",
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("source-retry"))) + ".json");
+        Directory.CreateDirectory(batchFile);
+        try
+        {
+            await Assert.ThrowsAnyAsync<IOException>(() => _store.ReportDeltaAsync(Uid, source, [delta], "source-retry"));
+        }
+        finally { Directory.Delete(batchFile); }
+        var reopened = new InventoryStore(_catalog, Path.Combine(_root, "records"));
+        Assert.Equal(1, (await reopened.ReportDeltaAsync(Uid, source, [delta], "source-retry")).DuplicateCount);
+        var workspace = await reopened.ReadAsync(Uid);
+        Assert.Equal("新来源", workspace.Sources[source.Reference].DisplayName);
+        Assert.Single(workspace.Inventory.Events.Where(item => item.Kind == "Delta"));
+        Assert.Equal(10, workspace.Inventory.Items["摩拉"][0].Quantity);
+    }
 
     /// <summary>同批逐条接受或拒绝，重传不产生新的状态事件，身份冲突整批拒绝。</summary>
     [Fact]
@@ -154,10 +225,17 @@ public sealed class InventoryBatchTests : IDisposable
         await _store.ReportAsync(Uid, new() { Reference = "other", DisplayName = "other" }, [Report("经验书", 2)]);
         var package = await _store.ExportInventoryAsync(Uid);
         package["batchId"] = "import";
-        var result = await _store.ImportInventoryAsync(package, "100000002", false);
+        package["accounts"]![Uid]!["deltas"] = new JArray(new JObject
+        {
+            ["name"] = "摩拉", ["delta"] = 1, ["source"] = _source.Reference,
+            ["recordedAt"] = _time.AddMinutes(1).ToString("O")
+        });
+        var result = await _store.ImportInventoryAsync(package, "100000002", false, allowDeveloperDeltas: true);
         Assert.Equal("import", result.BatchId);
-        Assert.Equal(2, result.Records.Count);
-        Assert.Equal(2, (await _store.GetBatchAsync("100000002", "import"))!.Records.Count);
+        Assert.Equal(3, result.Records.Count);
+        var batch = (await _store.GetBatchAsync("100000002", "import"))!;
+        Assert.Equal(3, batch.Records.Count);
+        Assert.Equal("Import", batch.Kind);
     }
 
     /// <summary>开发期只接受当前版本，旧格式明确拒绝且不改写文件。</summary>
@@ -201,6 +279,12 @@ public sealed class InventoryBatchTests : IDisposable
         await Assert.ThrowsAnyAsync<IOException>(() => _store.ReportAsync(Uid, _source, [Report("摩拉", 10)], batchId: "archive"));
         var saved = JsonConvert.DeserializeObject<InventoryDocument>(File.ReadAllText(InventoryPath))!;
         Assert.NotEmpty(saved.PendingEventArchives);
+        // 发布失败后直接展示已提交事件，不创建目录或清除恢复依据。
+        var beforeRead = File.ReadAllText(InventoryPath);
+        var readOnly = await _store.ReadAsync(Uid);
+        Assert.Equal("archive", Assert.Single(readOnly.Inventory.Events).RecordReference!.BatchId);
+        Assert.Equal(beforeRead, File.ReadAllText(InventoryPath));
+        Assert.True(File.Exists(blocked));
         File.Delete(blocked);
         var reopened = new InventoryStore(_catalog, Path.Combine(_root, "records"));
         Assert.NotNull(await reopened.GetBatchAsync(Uid, "archive"));

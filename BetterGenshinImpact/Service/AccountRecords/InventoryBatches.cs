@@ -129,13 +129,19 @@ public sealed partial class InventoryStore
     private void PublishBatches(InventoryDocument data)
     {
         if (data.PendingBatches.Count == 0) return;
-        var index = BatchIndex(data.Uid);
+        // 按组合身份一次建立索引，批量发布无需为每条输入扫描全部历史。
+        var index = new Dictionary<(string BatchId, string RecordId), InventoryBatchIndexEntry>();
+        foreach (var entry in BatchIndex(data.Uid))
+            index[(entry.Reference.BatchId, entry.Reference.RecordId)] = entry;
         // 必须先使旧索引失效，避免写完部分批次就中断时仍查询到过期索引。
         InvalidateBatchIndex(data.Uid);
         foreach (var pending in data.PendingBatches)
         {
             var batch = ReadBatch(data.Uid, pending.BatchId);
             if (batch.Kind.Length == 0) { batch.Kind = pending.Kind; batch.ReceivedAt = pending.ReceivedAt; }
+            // 导入本身允许混合记录；其他批次追加不同操作时明确标识为 Mixed。
+            else if (batch.Kind != pending.Kind && !(batch.Kind == "Import" && pending.Kind is "Report" or "Delta"))
+                batch.Kind = "Mixed";
             foreach (var record in pending.Records)
             {
                 var previous = batch.Records.FindIndex(item => item.RecordId == record.RecordId);
@@ -146,15 +152,14 @@ public sealed partial class InventoryStore
                     batch.Records[previous] = record;
                 }
                 else { batch.Records.Add(record); batch.OriginalCount++; }
-                index.RemoveAll(item => item.Reference.BatchId == batch.BatchId && item.Reference.RecordId == record.RecordId);
-                index.Add(new() { Name = record.Name, ProcessedAt = record.ProcessedAt,
-                    Reference = new() { BatchId = batch.BatchId, RecordId = record.RecordId } });
+                index[(batch.BatchId, record.RecordId)] = new() { Name = record.Name, ProcessedAt = record.ProcessedAt,
+                    Reference = new() { BatchId = batch.BatchId, RecordId = record.RecordId } };
             }
             batch.OriginalCount = data.BatchReceipts.GetValueOrDefault(batch.BatchId)?.Count ?? batch.OriginalCount;
             batch.RemovedCount = batch.OriginalCount - batch.Records.Count;
             Write(BatchPath(data.Uid, batch.BatchId), batch);
         }
-        Write(Path.Combine(AccountDirectory(data.Uid), "batch-index.json"), index);
+        Write(Path.Combine(AccountDirectory(data.Uid), "batch-index.json"), index.Values.ToList());
         data.PendingBatches.Clear();
         WriteCurrentInventory(data);
     }

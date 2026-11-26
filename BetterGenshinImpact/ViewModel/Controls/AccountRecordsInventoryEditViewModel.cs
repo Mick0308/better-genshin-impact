@@ -29,10 +29,6 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
     private readonly string _uid;
     /// <summary>待修订的原行。</summary>
     private readonly AccountRecordsInventoryRow? _original;
-    /// <summary>用户明确反馈原上报错误，默认不选。</summary>
-    [ObservableProperty] private bool _markScanIncorrect;
-    /// <summary>仅有可追溯的核实记录时允许反馈。</summary>
-    public bool CanMarkScanIncorrect => _original?.LastScanAttemptId != null;
     /// <summary>保存成功后请求视图关闭。</summary>
     public event Action? Saved;
     /// <summary>名称字段仅新增或未知名称可编辑。</summary>
@@ -126,7 +122,7 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
         // 在任何字典写入前复用服务层校验，避免到期输入无效时分类已部分保存。
         var expirationError = InventoryStore.ValidateExpirations(batches, quantity);
         if (expirationError != null) { Message = expirationError; return; }
-        var content = JsonConvert.SerializeObject(new { Name = name, Quantity = quantity, MarkScanIncorrect, Expirations = batches });
+        var content = JsonConvert.SerializeObject(new { Name = name, Quantity = quantity, Expirations = batches });
         if (_submissionContent != content) { _submissionContent = content; _submissionBatchId = Guid.NewGuid().ToString("N"); }
         try
         {
@@ -134,9 +130,8 @@ public partial class AccountRecordsInventoryEditViewModel : ObservableObject
             {
                 if (CanEditCategory && !string.IsNullOrWhiteSpace(Category)) await _store.DefineAsync(name, Category);
                 await _store.SetLocalQuantityAsync(_uid, name, quantity,
-                    MarkScanIncorrect && CanMarkScanIncorrect ? _original!.LastScanAttemptId : null,
-                    _original != null && _original.Name != name ? _original.Name : null, batches, _submissionBatchId,
-                    MarkScanIncorrect && CanMarkScanIncorrect ? _original!.LastScanRecordReference : null);
+                    originalName: _original != null && _original.Name != name ? _original.Name : null,
+                    expirations: batches, batchId: _submissionBatchId);
             });
             Saved?.Invoke();
         }

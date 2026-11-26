@@ -1130,16 +1130,16 @@ public sealed class InventoryStoreTests : IDisposable
         await Assert.ThrowsAsync<InvalidOperationException>(() => reopened.SetPriorAsync(Uid, "摩拉", true));
     }
 
-    /// <summary>人工反馈修改原上报结果，不制造新一次核实统计；人工来源不能上报增量。</summary>
+    /// <summary>人工修订只确认当前数量，不把历史上报标为错误；人工来源不能上报增量。</summary>
     [Fact]
-    public async Task ManualFeedback_MarksOriginalAttemptOnly()
+    public async Task ManualCorrection_DoesNotMarkPreviousReportIncorrect()
     {
         await _store.ReportAsync(Uid, Source("scan"), [Report("摩拉", 80)]);
         var attemptId = (await _store.LoadAsync(Uid)).Inventory.Items["摩拉"][0].AttemptId;
-        await _store.SetLocalQuantityAsync(Uid, "摩拉", 79, attemptId);
+        await _store.SetLocalQuantityAsync(Uid, "摩拉", 79);
         var source = (await _store.LoadAsync(Uid)).Sources["scan"];
         Assert.DoesNotContain("Attempts", JsonConvert.SerializeObject(source));
-        Assert.Contains((await _store.LoadAsync(Uid)).Inventory.Events, item => item.AttemptId == attemptId && item.State == "Error");
+        Assert.DoesNotContain((await _store.LoadAsync(Uid)).Inventory.Events, item => item.AttemptId == attemptId && item.State == "Error");
         Assert.Throws<ArgumentException>(() => { _ = _store.ReportDeltaAsync(Uid, Source("AccountRecords.SetLocalQuantityAsync"),
             [new InventoryDeltaReport { Name = "摩拉", Delta = 1, RecordedAt = _time.ToString("O") }]); });
     }

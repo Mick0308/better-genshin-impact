@@ -45,7 +45,7 @@ public sealed class InventoryIconCache : IStorageAreaProvider
         }
     }
 
-    /// <summary>界面只读查询，不接续旧目录、不等待后台加载锁；旧缓存由后台读取或写入时接续。</summary>
+    /// <summary>界面只读查询，不接续旧目录、不等待后台加载锁；旧目录图标需重新采集或上传。</summary>
     public bool Exists(string name) => File.Exists(PathFor(name));
 
     /// <summary>删除当前模型下单个物品的共享缓存，等待重新采集。</summary>

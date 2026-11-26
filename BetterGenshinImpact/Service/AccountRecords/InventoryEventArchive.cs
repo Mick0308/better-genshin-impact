@@ -71,9 +71,9 @@ public sealed partial class InventoryStore
     {
         data.EventArchiveLoaded = true;
         var directory = Path.Combine(AccountDirectory(data.Uid), "events");
-        if (!Directory.Exists(directory)) return;
         var events = new List<InventoryEvent>();
-        foreach (var path in Directory.EnumerateFiles(directory, "*.json").OrderBy(path => path, StringComparer.Ordinal))
+        var files = Directory.Exists(directory) ? Directory.EnumerateFiles(directory, "*.json") : Enumerable.Empty<string>();
+        foreach (var path in files.OrderBy(path => path, StringComparer.Ordinal))
         {
             var archived = Read<List<InventoryEvent>>(path, restoreBackup);
             if (archived.Any(item => item == null || item.History == null || !item.Archived))
@@ -86,6 +86,7 @@ public sealed partial class InventoryStore
             }
             events.AddRange(archived);
         }
-        data.Events = events.Concat(data.Events).GroupBy(item => item.Id).Select(items => items.Last()).OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
+        // 待发布内容已随主库存提交；只读查询也应看到最新状态，但不触发磁盘恢复。
+        data.Events = events.Concat(data.Events).Concat(data.PendingEventArchives).GroupBy(item => item.Id).Select(items => items.Last()).OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
     }
 }

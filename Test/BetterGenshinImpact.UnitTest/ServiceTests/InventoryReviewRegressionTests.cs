@@ -50,7 +50,8 @@ public sealed class InventoryReviewRegressionTests
     [InlineData(null, "材料", false)]
     [InlineData("食物", "食物", true)]
     [InlineData("", "", true)]
-    public async Task Import_MergesPageIndependently(string? localPage, string expected, bool warning)
+    [InlineData(null, "", false, "")]
+    public async Task Import_MergesPageIndependently(string? localPage, string expected, bool warning, string incomingPage = "材料")
     {
         var root = Path.Combine(Path.GetTempPath(), "InventoryReviewRegression", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -71,6 +72,7 @@ public sealed class InventoryReviewRegressionTests
                  "accounts":{"100000001":{"inventory":{"甜甜花":[{"quantity":10,"recordedAt":"placeholder","source":"scan"}]}}}}
                 """);
             package["accounts"]![uid]!["inventory"]!["甜甜花"]![0]!["recordedAt"] = "2020-01-01T00:00:00Z";
+            package["itemDefinitions"]!["甜甜花"]!["page"] = incomingPage;
             var result = await store.ImportInventoryAsync(package, uid, true);
             Assert.Equal(expected, (await store.ReadAsync(uid)).Pages["甜甜花"]);
             Assert.Equal(warning, result.Warnings.ContainsKey("甜甜花"));
@@ -80,6 +82,14 @@ public sealed class InventoryReviewRegressionTests
             var before = File.ReadAllText(path);
             await store.ImportInventoryAsync(package, uid, true);
             Assert.Equal(before, File.ReadAllText(path));
+            if (incomingPage == "")
+            {
+                // 显式未分类在 CSV 后续补齐背包页并重启后仍然生效。
+                Assert.Equal("", (string?)JObject.Parse(before)["甜甜花"]!["Page"]);
+                File.WriteAllText(csv, "item_name,material_type,page\n甜甜花,植物,材料\n");
+                var reopened = new InventoryStore(new InventoryCatalog(csv), Path.Combine(root, "records"));
+                Assert.Equal("", (await reopened.ReadAsync(uid)).Pages["甜甜花"]);
+            }
         }
         finally { Directory.Delete(root, true); }
     }

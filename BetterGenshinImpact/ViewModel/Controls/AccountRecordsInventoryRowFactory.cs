@@ -43,10 +43,6 @@ internal sealed class AccountRecordsInventoryRowFactory(InventoryCatalog catalog
                 details = "已过期库存待检查；请重新上报到期批次或手动修订数量。";
             return new AccountRecordsInventoryRow
             {
-                LastScanRecordReference = recent?.FirstOrDefault(record => !string.IsNullOrEmpty(record.AttemptId))?.RecordReference
-                    ?? events.LastOrDefault(item => !string.IsNullOrEmpty(item.AttemptId))?.RecordReference,
-                LastScanAttemptId = recent?.FirstOrDefault(record => !string.IsNullOrEmpty(record.AttemptId))?.AttemptId
-                    ?? events.LastOrDefault(item => !string.IsNullOrEmpty(item.AttemptId))?.AttemptId,
                 Event = active, PendingDelta = pending.Length > 0 ? pending.Sum(item => (decimal)item.Quantity) : null, StatusDetails = details,
                 ErrorCount = events.Count(item => item.State == "Error"),
                 Name = name, ItemNameSortKey = catalog.GetItemNameSortKey(name), Prior = workspace.Inventory.Prior.Contains(name),

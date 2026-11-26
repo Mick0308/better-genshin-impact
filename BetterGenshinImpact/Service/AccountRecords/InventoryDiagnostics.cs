@@ -69,7 +69,6 @@ public sealed partial class InventoryStore
         "上报的记录时间无法解析或未注明时区。请修正来源或导入文件中的时间后重新上报；也可查看游戏后手动填写当前实际库存总数。" => "RecordedAt is invalid or has no time zone.",
         "上报的记录时间比本机时间晚超过五分钟。请核对来源和本机时钟后重新上报，或查看游戏后手动填写当前实际库存总数。" => "RecordedAt is more than five minutes in the future; check the source clock.",
         "该材料曾有增减信息，已完成核实。" => "Pending inventory deltas have been verified.",
-        "用户标记上次上报有错误。" => "The user reported an error in the previous report.",
         "用户已批量归档。" => "The user archived completed events in bulk.",
         "用户已确认。" => "The user acknowledged this event.",
         "用户删除物品记录。" => "The user deleted the item record.",

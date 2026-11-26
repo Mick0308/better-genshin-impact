@@ -28,8 +28,6 @@ public sealed class InventoryBatchRecord
     public string Message { get; set; } = "";
     /// <summary>最近一次处理时间，失败输入允许按原业务规则重新校验。</summary>
     public DateTimeOffset ProcessedAt { get; set; }
-    /// <summary>输入明确引用的原记录，例如人工反馈的错误来源。</summary>
-    public InventoryRecordReference? RelatedRecord { get; set; }
     /// <summary>人工确认前的有效数量；无基准时为空。</summary>
     public long? PreviousQuantity { get; set; }
     /// <summary>人工确认的实际提交时间，不纳入重传输入摘要。</summary>

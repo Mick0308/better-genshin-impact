@@ -186,6 +186,8 @@ public sealed partial class InventoryStore
             foreach (var entry in batch)
             {
                 var report = entry.Report;
+                // 重试已提交增量时也补齐来源名称；数量仍由接收凭证防止重复应用。
+                if (!origins.ContainsKey(entry.Source.Reference)) origins[entry.Source.Reference] = entry.Source;
                 if (SelectBatchRecord(data, journal, report.RecordId!))
                 {
                     result.DuplicateCount++;
@@ -193,7 +195,6 @@ public sealed partial class InventoryStore
                     continue;
                 }
                 var reference = entry.Source.Reference;
-                if (!origins.ContainsKey(reference)) origins[reference] = entry.Source;
                 var name = report.Name.Trim();
                 var attemptId = Convert.ToHexString(SHA256.HashData(
                     Encoding.UTF8.GetBytes(uid + "\n" + reference + "\n" + ObservationJson(report))));

@@ -25,8 +25,6 @@ public sealed partial class AccountRecordsInventoryRow : ObservableObject
         _ = SortValues;
         var resetIcon = refreshIcon || (IconLoader == null) != (next.IconLoader == null);
         Prior = next.Prior;
-        LastScanAttemptId = next.LastScanAttemptId;
-        LastScanRecordReference = next.LastScanRecordReference;
         Event = next.Event;
         ErrorCount = next.ErrorCount;
         CanBatchArchive = next.CanBatchArchive;
@@ -70,10 +68,6 @@ public sealed partial class AccountRecordsInventoryRow : ObservableObject
     public int ErrorCount { get; set; }
     /// <summary>当前底部提示正在展示本行事件。</summary>
     [ObservableProperty] private bool _isNoticeActive;
-    /// <summary>最近一次可追溯上报批次，包括失败上报。</summary>
-    public string? LastScanAttemptId { get; set; }
-    /// <summary>反馈时定位到具体上报记录，旧数据仍可使用 AttemptId。</summary>
-    public InventoryRecordReference? LastScanRecordReference { get; set; }
     /// <summary>状态优先级：红、橘、黄、绿、灰、无灯。</summary>
     public int StateRank => HasError ? 0 : Event?.State switch { "Error" => 0, "Warning" => 1, "Pending" => 2, "Completed" => 3, "Planned" => 4, _ => 5 };
     /// <summary>是否显示状态灯。</summary>

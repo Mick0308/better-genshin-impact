@@ -314,20 +314,23 @@ public sealed partial class InventoryStore
                 report.Name = group.Key;
                 var ids = group.Select(item => item.RecordId!).ToArray();
                 var alreadyAccepted = ids.Select(id => SelectBatchRecord(data, journal, id)).ToArray().All(value => value);
-                SelectBatchRecord(data, journal, report.RecordId!);
                 if (alreadyAccepted)
                 {
                     result.DuplicateCount++;
                     CompleteBatchRecords(journal, ids, "Duplicate", "同一批次记录已处理。");
                     continue;
                 }
+                // 混合重传组优先引用尚未接收的输入，避免把新冲突归到旧成功记录。
+                report = group.First(item => !journal.Records.Single(record => record.RecordId == item.RecordId).AlreadyAccepted);
+                report.Name = group.Key;
+                SelectBatchRecord(data, journal, report.RecordId!);
                 // 分类提醒与数量校验独立；重复数量上报仍需核对分类，不改写本地字典。
                 if (definitions.TryGetValue(group.Key, out var localCategory) && !string.IsNullOrEmpty(localCategory))
                     CheckReportedCategories(data, group.Key, origin.Reference, group.Select(item => item.Category), localCategory, now, result);
                 data.Items.TryGetValue(group.Key, out var records);
                 var current = records?.FirstOrDefault();
                 var candidate = Parse(report, origin.Reference, now, out var reason);
-                if (group.Skip(1).Any(other => other.Quantity != report.Quantity || other.RecordedAt != report.RecordedAt || !SameExpirations(other.Expirations, report.Expirations)))
+                if (group.Any(other => other.Quantity != report.Quantity || other.RecordedAt != report.RecordedAt || !SameExpirations(other.Expirations, report.Expirations)))
                     reason = "本次上报中，同一物品有多条数量、记录时间或到期信息不一致的记录。请来源合并为一条正确记录后重新上报，或查看游戏后手动填写当前实际库存总数。";
                 // 只接受无歧义的缺失分类；已有本地分类仍由冲突提醒机制保护。
                 var categories = group.Select(item => item.Category?.Trim()).Where(value => !string.IsNullOrEmpty(value)).Distinct(StringComparer.Ordinal).ToArray();
@@ -542,16 +545,20 @@ public sealed partial class InventoryStore
     /// 后续自动计算、推断、修正库存不得复用此入口，应通过 ReportAsync 显式传入各自来源，避免误标为人工核实。
     /// </remarks>
     /// <param name="originalName">本次明确修正的未知名称；只结束已有事项，不建立名称映射。</param>
-    public Task SetLocalQuantityAsync(string uid, string name, long quantity, string? incorrectAttemptId = null, string? originalName = null,
-        List<InventoryExpiration>? expirations = null, string? batchId = null, InventoryRecordReference? incorrectRecordReference = null)
+    public Task SetLocalQuantityAsync(string uid, string name, long quantity, string? originalName = null,
+        List<InventoryExpiration>? expirations = null, string? batchId = null)
     {
         // 等待存储锁期间不得引用界面仍可修改的批次对象。
         var batches = expirations?.Select(item => item == null ? null! : new InventoryExpiration { Quantity = item.Quantity, ExpiresAt = item.ExpiresAt }).ToList();
         return Locked(() =>
         {
-            if (quantity < 0 || !Definitions().ContainsKey(name)) throw new ArgumentException("无法提交人工核实：物品名称须已收录，当前实际库存总数须为非负整数。");
             var sources = Sources();
             var data = Load(uid);
+            // 已成功的相同输入仅确认接收结果，不受后续库存或字典变化影响。
+            var journal = BeginBatch(data, batchId, "Manual", [BatchInput("1", name, LocalQuantitySource, "Manual",
+                new { Name = name, Quantity = quantity, OriginalName = originalName, Expirations = batches })]);
+            if (SelectBatchRecord(data, journal, "1")) return true;
+            if (quantity < 0 || !Definitions().ContainsKey(name)) throw new ArgumentException("无法提交人工核实：物品名称须已收录，当前实际库存总数须为非负整数。");
             var expirationError = ValidateExpirations(batches, quantity);
             if (expirationError != null) throw new ArgumentException(expirationError);
             if (quantity > 0 && batches == null && (data.Items.GetValueOrDefault(name)?.FirstOrDefault()?.Expirations != null ||
@@ -561,28 +568,9 @@ public sealed partial class InventoryStore
             var renamed = originalName != null && originalName != name;
             if (renamed && Definitions().ContainsKey(originalName!))
                 throw new InvalidOperationException("原物品名称已收录，不能按未知名称合并，当前操作未执行。");
-            var journal = BeginBatch(data, batchId, "Manual", [BatchInput("1", name, LocalQuantitySource, "Manual",
-                new { Name = name, Quantity = quantity, OriginalName = originalName, IncorrectAttemptId = incorrectAttemptId, IncorrectRecordReference = incorrectRecordReference, Expirations = batches })]);
-            if (SelectBatchRecord(data, journal, "1")) return true;
-            journal.Records[0].RelatedRecord = incorrectRecordReference ?? data.Items.GetValueOrDefault(renamed ? originalName! : name)?
-                .FirstOrDefault(record => incorrectAttemptId != null && record.AttemptId == incorrectAttemptId)?.RecordReference;
             var previousQuantity = data.Items.GetValueOrDefault(name)?.FirstOrDefault()?.Quantity;
             var settings = Settings();
             Snapshot(data, settings);
-            if (incorrectRecordReference != null || incorrectAttemptId != null)
-            {
-                var feedbackName = renamed ? originalName! : name;
-                data.Items.TryGetValue(feedbackName, out var previousRecords);
-                var original = previousRecords?.FirstOrDefault(record => incorrectRecordReference != null ? record.RecordReference == incorrectRecordReference : record.AttemptId == incorrectAttemptId);
-                var originalEvent = data.Events.LastOrDefault(item => item.Name == feedbackName && (incorrectRecordReference != null ? item.RecordReference == incorrectRecordReference : item.AttemptId == incorrectAttemptId));
-                var originalSource = original?.Source ?? originalEvent?.Source;
-                if (originalSource == null) throw new InvalidOperationException("要标记错误的原上报记录已不存在或超出保留范围。请刷新后重试；也可取消“标记上次上报有错误”，再提交当前实际库存总数。");
-                var feedback = AddEvent(data, feedbackName, originalSource, "Report", "Error", quantity, DateTimeOffset.UtcNow, "用户标记上次上报有错误。");
-                feedback.History.Add("AttemptId=" + incorrectAttemptId);
-                feedback.AttemptId = incorrectAttemptId ?? "";
-                journal.Records[0].RelatedRecord = original?.RecordReference ?? originalEvent?.RecordReference;
-                feedback.History.Add("Current=" + JsonConvert.SerializeObject(previousRecords?.FirstOrDefault()));
-            }
             sources[LocalQuantitySource] = new AccountRecordSource { Reference = LocalQuantitySource, DisplayName = "狛荷屋-人工编辑" };
             Write(Path.Combine(_root, "sources.json"), sources);
             _sourceStamp = File.GetLastWriteTimeUtc(Path.Combine(_root, "sources.json"));

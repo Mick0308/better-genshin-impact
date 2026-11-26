@@ -213,12 +213,14 @@ public sealed partial class InventoryStore
                     var page = MergeDefinitionField(localPage, (string?)item.Value["page"], "背包页", conflicts, previous?.Page == "");
                     var incomingComment = (string?)item.Value["comment"];
                     var comment = string.IsNullOrWhiteSpace(previous?.Comment) ? incomingComment ?? "" : previous.Comment;
-                    if (category != localCategory || page != localPage || comment != (previous?.Comment ?? ""))
+                    // 显式空值是持续覆盖 CSV 的意图，即使当前有效值相同也必须保存。
+                    var explicitEmptyPage = (string?)item.Value["page"] == "" && page == "";
+                    if (category != localCategory || page != localPage || comment != (previous?.Comment ?? "") || explicitEmptyPage && previous?.Page != "")
                     {
                         overrides[item.Name] = new InventoryItemOverride
                         {
                             Category = category,
-                            Page = page != localPage ? page : previous?.Page,
+                            Page = explicitEmptyPage ? "" : page != localPage ? page : previous?.Page,
                             Comment = comment
                         };
                         changed = true;
